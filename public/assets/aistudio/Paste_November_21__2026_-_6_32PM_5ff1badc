@@ -1,0 +1,837 @@
+
+Conversation with Gemini
+Ii sharax oo i tus koodhka loogu xiro Maktabadda Dhijitaalka ah Firebase Authentication, Firestore, Storage, iyo Realtime Online/Offline status.
+
+Si Maktabadda Dhijitaalka ah ay u shaqeyso si dhab ah oo loogu publish gareeyo meel kasta, waxaan beddelaynaa kaydintii ku tiirsanayd localStorage oo waxaan ku xiraynaa afar adeeg oo Firebase ah:
+
+Firebase Authentication: Diiwaangelinta (Sign Up) iyo gelitaanka (Log In) isticmaalayaasha.
+
+Cloud Firestore: Kaydinta xogta buugagga (books), xogta isticmaalayaasha iyo doorka (users oo leh role: "admin" ama "user"), iyo buugagga la jecleysiiyay (favorites).
+
+Firebase Storage: Kaydinta faylasha buugagga (PDF, EPUB, iwm.) iyo sawirrada jaldiga (coverUrl).
+
+Realtime Database (Presence): La socodka dadka hadda Online ah iyo waqtigii ugu dambeeyay ee ay Offline noqdeen (lastSeen).
+
+1. Qaabka Xogta (Data Structure) ee Firestore & Realtime DB
+Firestore -> users/{uid}:
+
+name: "Axmed Cali"
+
+email: "axmed@example.com"
+
+role: "user" ama "admin"
+
+favorites: ["book_1", "book_2"]
+
+Firestore -> books/{bookId}:
+
+title: "Taariikhda Sayniska"
+
+author: "Dr. Faarax"
+
+category: "Taariikh"
+
+description: "Faahfaahin kooban..."
+
+coverUrl: "https://..." (Firebase Storage link)
+
+fileUrl: "https://..." (Firebase Storage PDF/EPUB link)
+
+createdAt: timestamp
+
+Realtime Database -> status/{uid}:
+
+online: true ama false
+
+lastSeen: server timestamp
+
+2. Koodhka Ku Xiridda Firebase (JavaScript ES Modules)
+Waxaad isticmaali kartaa type="module" gudaha HTML/JS si aad si toos ah ugu xirto Firebase SDK:
+
+JavaScript
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import {
+  getAuth,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import {
+  getFirestore,
+  doc,
+  setDoc,
+  getDoc,
+  collection,
+  addDoc,
+  getDocs,
+  deleteDoc,
+  updateDoc,
+  arrayUnion,
+  arrayRemove,
+  serverTimestamp
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import {
+  getStorage,
+  ref,
+  uploadBytes,
+  getDownloadURL
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js";
+import {
+  getDatabase,
+  ref as dbRef,
+  set,
+  onDisconnect,
+  onValue,
+  serverTimestamp as rtdbServerTimestamp
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+
+// 1. Ku qor xogta mashruucaaga Firebase Console
+const firebaseConfig = {
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+  databaseURL: "https://YOUR_PROJECT_ID-default-rtdb.firebaseio.com",
+  projectId: "YOUR_PROJECT_ID",
+  storageBucket: "YOUR_PROJECT_ID.appspot.com",
+  messagingSenderId: "YOUR_SENDER_ID",
+  appId: "YOUR_APP_ID"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const storage = getStorage(app);
+const rtdb = getDatabase(app);
+
+// 2. Diiwaangelin (Sign Up) + Abuuridda profile-ka user-ka ee Firestore
+export async function registerUser(name, email, password) {
+  const cred = await createUserWithEmailAndPassword(auth, email, password);
+  const uid = cred.user.uid;
+
+  await setDoc(doc(db, "users", uid), {
+    name,
+    email,
+    role: "user", // Qof kasta wuxuu ku bilaabmaa "user"; Admin waxaa laga dhigaa Firestore Console
+    favorites: [],
+    createdAt: serverTimestamp()
+  });
+
+  return cred.user;
+}
+
+// 3. Gelitaan (Log In) & Ka bixid (Log Out)
+export async function loginUser(email, password) {
+  const cred = await signInWithEmailAndPassword(auth, email, password);
+  return cred.user;
+}
+
+export async function logoutUser(uid) {
+  if (uid) {
+    await set(dbRef(rtdb, `status/${uid}`), {
+      online: false,
+      lastSeen: rtdbServerTimestamp()
+    });
+  }
+  await signOut(auth);
+}
+
+// 4. Online / Offline Presence (Realtime Database)
+function setupPresence(uid) {
+  const userStatusRef = dbRef(rtdb, `status/${uid}`);
+  const connectedRef = dbRef(rtdb, ".info/connected");
+
+  onValue(connectedRef, (snap) => {
+    if (snap.val() === false) return;
+
+    // Marka uu xiro browser-ka ama uu go'o internet-ku, si toos ah ayuu offline u noqonayaa
+    onDisconnect(userStatusRef).set({
+      online: false,
+      lastSeen: rtdbServerTimestamp()
+    }).then(() => {
+      set(userStatusRef, {
+        online: true,
+        lastSeen: rtdbServerTimestamp()
+      });
+    });
+  });
+}
+
+// 5. La socodka xaaladda Auth & Role-ka (Admin vs User)
+onAuthStateChanged(auth, async (user) => {
+  if (!user) {
+    // Tus bogga Log In / Sign Up
+    console.log("User waa logged out");
+    return;
+  }
+
+  setupPresence(user.uid);
+
+  const userSnap = await getDoc(doc(db, "users", user.uid));
+  const profile = userSnap.exists() ? userSnap.data() : { role: "user", name: user.email };
+
+  console.log("Soo galay:", profile.name, "| Role:", profile.role);
+  // Haddii profile.role === "admin", muuji qaybta Admin Upload iyo liiska Users
+});
+
+// 6. Soo gelinta buug cusub (Storage + Firestore) — Admin kaliya
+export async function uploadBook({ title, author, category, description, coverFile, bookFile }) {
+  const timestamp = Date.now();
+
+  // Upload sawirka jaldiga haddii la soo geliyay
+  let coverUrl = "";
+  if (coverFile) {
+    const coverRef = ref(storage, `covers/${timestamp}_${coverFile.name}`);
+    await uploadBytes(coverRef, coverFile);
+    coverUrl = await getDownloadURL(coverRef);
+  }
+
+  // Upload faylka buugga (PDF/EPUB)
+  const bookRef = ref(storage, `books/${timestamp}_${bookFile.name}`);
+  await uploadBytes(bookRef, bookFile);
+  const fileUrl = await getDownloadURL(bookRef);
+
+  // Kaydi xogta buugga ee Firestore
+  const docRef = await addDoc(collection(db, "books"), {
+    title,
+    author,
+    category,
+    description,
+    coverUrl,
+    fileUrl,
+    fileName: bookFile.name,
+    createdAt: serverTimestamp()
+  });
+
+  return docRef.id;
+}
+
+// 7. Akhrinta dhammaan buugagga & ku daridda Favorites
+export async function fetchBooks() {
+  const snap = await getDocs(collection(db, "books"));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+export async function toggleFavorite(uid, bookId, isFavorite) {
+  const userRef = doc(db, "users", uid);
+  await updateDoc(userRef, {
+    favorites: isFavorite ? arrayRemove(bookId) : arrayUnion(bookId)
+  });
+}
+
+export async function removeBook(bookId) {
+  await deleteDoc(doc(db, "books", bookId));
+}
+
+// 8. Admin: Akhrinta liiska Users iyo xaaladdooda Online/Offline
+export function listenToUsersAndPresence(onUpdate) {
+  let usersList = [];
+  let presenceMap = {};
+
+  const emit = () => {
+    const merged = usersList.map((u) => ({
+      ...u,
+      presence: presenceMap[u.id] || { online: false, lastSeen: null }
+    }));
+    onUpdate(merged);
+  };
+
+  getDocs(collection(db, "users")).then((snap) => {
+    usersList = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    emit();
+  });
+
+  onValue(dbRef(rtdb, "status"), (snap) => {
+    presenceMap = snap.val() || {};
+    emit();
+  });
+}
+3. Xeerarka Ammaanka (Firestore Security Rules)
+Si qof caadi ah (role !== "admin") uusan ugu darin, wax uga beddelin, ama uusan uga tirtirin buugagga books collection-ka, ku dar xeerarkan Firestore -> Rules:
+
+JavaScript
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin";
+    }
+
+    match /users/{userId} {
+      allow create: if isSignedIn() && request.auth.uid == userId;
+      allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow update: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    match /books/{bookId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isAdmin();
+    }
+  }
+}
+Sida Aad Admin Ugu Dhigayso Akoonkaaga Ugu Horreeya
+Is-diiwaangeli (Sign Up) adigoo isticmaalaya app-ka ama Firebase Console.
+
+Fur Firestore Database -> users -> {uid}.
+
+Ka beddel role qiimaha "user" oo ka dhig "admin", kadibna refresh garee bogga.
+
+Fiiri maktabada itusi
+
+Waxaan hadda kuu soo saarayaa Maktabadda Dhijitaalka ah oo leh muuqaalkii iyo qalabkii dhammaystiraa ee tijaabada (localStorage), kuna xiran qaab-dhismeedka Firebase si aad u aragto sida uu boggu u ekaanayo iyo sida qaybaha kala duwan (Log In / Sign Up, Maktabadda, Akhri Online, Soo Deji, Geli Buug / Admin, iyo Users & Online Status) ay isugu xiran yihiin.
+
+maktabadda_online.html [generated with web_code_canvas tool]
+
+Maxaad Ka Arkaysaa Maktabadda Hadda?
+Bogga Gelitaanka (Log In / Sign Up): Waxaad geli kartaa akoon tijaabo ah oo Reader ah ama Admin ah, ama waxaad is-diiwaangelin kartaa (Sign Up).
+
+Maktabadda Buugagga: Waxaad ka dhex raadin kartaa buugagga, waad shaandhayn kartaa qaybaha, waadna ku dari kartaa Favorites.
+
+Akhristaha Gudaha (Online Reader) & Soo Dejinta: Waxaad ka akhrisan kartaa buugagga gudaha bogga adigoo beddelaya Light / Sepia / Dark iyo cabbirka farta, ama waad soo dejisan kartaa.
+
+Qaybta Admin (marka aad gasho akoon Admin ah): Waxaad ku dari kartaa buug cusub oo leh sawir jaldi ah (Cover Image) iyo faylka buugga, waxaadna arki kartaa liiska isticmaalayaasha iyo xaaladdooda Online / Offline.
+
+Wey igu adkaatey in aan sameyo, ma ii sameyn karta fadlan!
+
+Waan kuu dhisayaa faylka dhammaystiran ee Maktabadda Dhijitaalka ah (maktabadda_online.html) oo leh muuqaal qurxoon, CSS dhammaystiran, Log In / Sign Up leh kala saaridda Admin vs Reader, akhris online ah (oo ay ku jirto horudhaca PDF/faylasha), soo dejin, qaybta Admin ee soo gelinta buugagga cusub (oo leh sawir jaldi ah iyo faylka buugga) iyo la socodka Users & Online/Offline, isla markaana u shaqaynaya si degdeg ah Demo / Local Mode iyo Firebase Cloud Mode marka aad geliso furayaashaada Firebase.
+
+Maktabadda Dhijitaalka ah
+
+
+
+Waxaan kuu dhisay Maktabadda Dhijitaalka ah (maktabadda_online.html) oo hal fayl ah:
+
+Labada Qaab (Dual Mode): Wuxuu si toos ah ugu shaqaynayaa Qaabka Tijaabada (Local) markiiba, wuxuuna leeyahay FIREBASE_CONFIG oo si toos ah ugu wareegaya Firebase Cloud Mode (Auth, Firestore, Storage, iyo Realtime Database presence) marka aad geliso furayaashaada.
+
+Kala Saaridda Doorka (admin vs user): Waxaad isku tijaabin kartaa badhamada "Ku gal Reader (Akhriste)" iyo "Ku gal Admin (Maamule)", iyadoo qaybta Geli Buug, tirtiridda buugagga, iyo Users & Online/Offline ay u furan yihiin Admin keliya.
+
+Akhristaha Online-ka & Soo Dejinta: Waxaad beddeli kartaa Cad / Sepia / Madow iyo cabbirka farta, waadna furi kartaa horudhaca PDF/faylasha (<iframe>) ama waad soo dejisan kartaa.
+
+Firbass ayaan ku xiri rabaa, maxan sameya
+
+Waa arrin aad u fudud—waad ku mahadsan tahay sida aad ula socoto! Si aad Maktabadda Dhijitaalka ah ugu xirto Firebase, raac tallaabooyinkan fudud ee hoose mid mid:
+
+Tallaabada 1: Samee Mashruuc Cusub oo Firebase Ah
+Gal Firebase Console oo ku gal akoonkaaga Google.
+
+Guji Create a project (ama Add project), u bixi magac (tusaale: maktabadda-online), kadibna dhammaystir abuurista mashruuca.
+
+Tallaabada 2: Daar Afarta Adeeg ee Muhiimka Ah
+Gudaha mashruucaaga Firebase, daar adeegyadan:
+
+Authentication: Aaad Build -> Authentication -> Get started, dooro Email/Password, kadibna daar (Enable) oo kaydi.
+
+Firestore Database: Aaad Build -> Firestore Database -> Create database. Dooro qaabka Start in test mode bilowga (ama ku dar xeerarkii Security Rules ee aynu hore u qornay), kadibna abuur.
+
+Storage: Aaad Build -> Storage -> Get started, dooro Start in test mode bilowga, kadibna dhammaystir.
+
+Realtime Database: Aaad Build -> Realtime Database -> Create Database (waxaa loo isticmaalaa la socodka Online / Offline), dooro Start in test mode bilowga, kadibna abuur.
+
+Tallaabada 3: Qaado Furayaasha firebaseConfig
+Guji calaamadda Settings (Gear icon) ee ku taal dhinaca sare ee bidixda -> Project settings.
+
+Hoosta u deg ilaa qaybta Your apps, haddii aadan lahayn Web app guji calaamadda </> (Web), magac u bixi, kadibna koobi garee xogta ku jirta firebaseConfig (sida apiKey, authDomain, databaseURL, projectId, storageBucket, messagingSenderId, appId).
+
+Tallaabada 4: Geli Furayaasha Gudaha Koodhkaaga
+Fur faylkaaga maktabadda_online.html ama koodhkaaga JavaScript ee Firebase.
+
+Raadi qaybta firebaseConfig (ama FIREBASE_CONFIG), kadibna ku beddel qiimayaasha "YOUR_..." furayaasha dhabta ah ee aad ka soo qaadatay Firebase Console.
+
+Kaydi faylka (Save).
+
+Tallaabada 5: Ka Dhig Akoonkaaga Ugu Horreeya "Admin"
+Fur website-kaaga oo is-diiwaangeli (Sign Up) adigoo isticmaalaya email-kaaga iyo password-kaaga.
+
+Ku noqo Firebase Console -> Firestore Database -> users.
+
+Fur document-ga leh magaca/ID-ga akoonkaaga, ka beddel goobta role oo ka dhig "admin" (halkii ay ka ahaan lahayd "user"), kadibna guji Update.
+
+Dib u cusboonaysii (Refresh) bogga maktabadda—waxaad markiiba arki doontaa awoodda Admin (soo gelinta buugagga, tirtiridda, iyo liiska isticmaalayaasha oo leh xaaladda Online / Offline).
+
+Talo Degdeg Ah
+Haddii aad rabto inaan kugu caawiyo oo aan kuu qoro koodhka dhammaystiran ee hal fayl ah oo ay ku dhan yihiin Firebase Auth, Firestore, Storage, iyo Realtime Database si ay markiiba u wada shaqeeyaan marka aad geliso furayaashaada, ii sheeg!
+
+Wan ku xirey
+
+Mabruuk! Waad ku mahadsan tahay dadaalkaaga—hadda oo aad ku xirtay Firebase, maktabaddaadu waxay u gudubtay marxalad dhab ah oo xogtu ku kaydsan tahay cloud-ka.
+
+Si aad u hubiso in wax walba ay si habboon u shaqaynayaan kahor inta aadan dadka kale la wadaagin, halkan waxaa ku yaalla liiska hubinta degdegga ah (Quick Verification Checklist):
+
+1. Hubi Diiwaangelinta & Role-ka Admin-ka
+Is-diiwaangeli (Sign Up) adigoo isticmaalaya akoonkaaga, kadibna Firestore Database -> users ka hubi in document-gaagu uu leeyahay role: "admin".
+
+Dib u cusboonaysii (Refresh) bogga si aad u hubiso in badhanka/qaybta Geli Buug (Admin) iyo liiska isticmaalayaasha ay kuu furmeen.
+
+2. Tijaabi Soo Gelinta Buug, Akhriska, & Soo Dejinta
+Ku dar buug tijaabo ah adigoo gelinaya sawir jaldi ah (cover) iyo fayl (sida PDF ama TXT).
+
+Ka hubi Firebase Storage in sawirka iyo faylka buuggu ay galeen folders-ka saxda ah (covers/ iyo books/), isla markaana Firestore -> books uu ku kordhay document-kii buugga.
+
+Tijaabi badhanka Akhri Online iyo Soo Deji si aad u xaqiijiso in link-yadu si sax ah u furmayaan.
+
+3. Tijaabi Xaaladda Online / Offline
+Fur bogga maktabadda oo ka hubi Realtime Database -> status/{uid} in online uu isu beddelay true.
+
+Xir tab-ka ama browser-ka (ama ka bax akoonka), kadibna eeg haddii online uu noqday false oo uu cusboonaysiiyay lastSeen.
+
+4. Xeerarka Ammaanka Kahor Daabicidda (Publish)
+Haddii aad adeegyada Firebase ku daartay Test mode, xusuusnow inaad ku beddesho Firestore Rules iyo Storage Rules xaddidan (sida qofka soo galay oo kaliya inuu wax akhriyo, admin-kana uu wax qoro/tirtiro) kahor inta aadan dadweyne u furin.
+
+Ma waxaa jira qalad (error) ama fariin digniin ah oo kuu soo baxday marka aad tijaabinaysay, mise wax walba si fiican ayay kuu shaqaynayaan?
+
+Maktabada download ma dhihi kara
+
+Haa, waad dhihi kartaa "Download"! Af-Soomaali ahaan waxaa si fiican loo isticmaali karaa Download (oo ah eray si ballaaran looga yaqaan tignoolajiyada iyo maktabadaha dhijitaalka ah) ama Soo Deji — labaduba waa sax, waana isku macne.
+
+Sidee Ugu Qori Kartaa Maktabadda Gudaha?
+Badhanka faylka: Download ama Download PDF (ama Soo Deji / Soo Deji PDF).
+
+Qoraalka guud ee bogga: Waxaad isticmaali kartaa Download badhamada iyo kaararka buugagga si ay u noqdaan kuwo degdeg ah oo qof kasta markiiba garto, halka sharraxaadda ama fariimaha kale aad ku qori karto Af-Soomaali cad.
+
+Haddii aad rabto inaan kugu caawiyo beddelidda qoraallada badhamada ama inaan kugu daro xisaabinta tirada jeer ee buug la download-gareeyay (downloadCount) ee Firestore, ii sheeg!
+
+Maya, taas ma aha
+
+Waan ka xumahay inaan si sax ah u fahmi waayay ujeedkaaga markii aad tiri "Maktabada download ma dhihi kara".
+
+Bal i sii faahfaahin yar—ma waxaad ula jeedday:
+
+In maktabadda laga joojiyo / laga saaro awoodda Download-ka (si buugagga gudaha bogga looga akhristo oo keliya, loona soo dejisan karin)?
+
+In magaca maktabadda ama qayb ka mid ah loo bixiyo "Download"?
+
+Inaad ka waddo in dadku "download" gareeyaan maktabadda oo dhan (sida app la soo dego)?
+
+Ii sheeg midka aad ka waddo si aan si toos ah kuugu caawiyo!
+
+Itus horta
+
+Waxaan halkan kuugu soo koobayaa saddexda qaab ee ay maktabaddaadu u ekaan karto oo u shaqayn karto marka laga hadlayo Download, si aad adigu u aragto una doorato midka aad ula jeedday:
+
+1. Qaabka Koowaad: "Akhris Kaliya" (Download la'aan)
+Maxaa isbeddelaya: Badhanka Soo Deji / Download waa laga saarayaa kaararka buugagga iyo qaybta akhriska.
+
+Sida uu u shaqaynayo: Isticmaaluhu wuxuu buugga ka akhrisan karaa gudaha bogga oo keliya (Online Reader), mana soo dejisan karo faylka PDF/EPUB kombiyuutarkiisa ama taleefankiisa.
+
+Faaiidada: Waxay ilaalisaa xuquuqda buugagga (copyright) si aan faylasha si fudud loogu faafin meel kale.
+
+2. Qaabka Labaad: "App La Soo Dego" (Downloadable Web App / PWA)
+Maxaa isbeddelaya: Bogga maktabadda waxaa lagu darayaa badhan Ku Daji Taleefanka / Install App (ama Download App).
+
+Sida uu u shaqaynayo: Dadku waxay maktabadda u soo dejisan karaan sidii App dhab ah oo ka soo muuqda shaashadda taleefankooda (Android / iPhone) ama kombiyuutarkooda (Windows / Mac), iyagoon u baahnayn Play Store ama App Store.
+
+Faaiidada: Isticmaalayaashu si degdeg ah ayay u furi karaan maktabadda mar kasta.
+
+3. Qaabka Saddexaad: "Soo Dejinta Faylka HTML / Mashruuca" (Download Code-kaaga)
+Maxaa isbeddelaya: Adiga qudhaada ayaa soo dejisanaya faylka maktabadda_online.html si aad u kaydsato, wax uga beddesho kombiyuutarkaaga, ama aad ugu geliso Firebase Hosting.
+
+Sida aad u soo dejisan karto: Dhanka sare ama hoose ee daaqadda Canvas-ka ee lagu tusay faylka maktabadda_online.html, waxaa ku yaalla badhan Download ama Copy oo aad faylka ku soo dejisan karto kombiyuutarkaaga.
+
+Midkee ka mid ah saddexdan (1, 2, ama 3) ayaad ula jeedday markii aad tiri "Maktabada download ma dhihi kara"?
+
+Step by step
+
+Waa kuwan tallaabo-tallaabo (Step by Step) sida aad ugu dhaqangelin karto saddexda qaab ee ay maktabaddaadu u yeelan karto la xiriirka Download—iyadoo mid walba si cad loo kala saaray si aad u qaadato kan aad rabto:
+
+Qaabka 1: Ka Saaridda Download-ka (Akhris Gudaha Ah Kaliya)
+1
+Fur faylka maktabadda (HTML/JS)
+Ku fur maktabadda_online.html ama editor-kaaga koodhka (sida VS Code).
+
+2
+Raadi badhamada Download-ka
+Ka raadi erayada Soo Deji, Download, ama download gudaha HTML-ka iyo JavaScript-ka kaararka buugagga iyo Reader modal-ka.
+
+3
+Tirtir ama qari badhanka Download
+Ka saar badhanka Download meelaha ay buugaggu ka muuqdaan, halka badhanka Akhri Online uu sii joogayo si buugagga looga akhristo gudaha reader-ka oo keliya.
+
+4
+Xooji ilaalinta faylka PDF/faylasha (ikhtiyaari)
+Ku dar oncontextmenu="return false" (ama ka saar badhamada toolbar-ka ee browser-ka marka la isticmaalayo iframe / PDF viewer) si looga hortago soo dejinta degdegga ah.
+
+Qaabka 2: Ka Dhigidda Maktabadda "App La Soo Dego" (PWA / Installable App)
+1
+Abuur faylka manifest.json
+Samee fayl lagu magacaabo manifest.json oo ku qoran magaca maktabadda (Maktabadda Dhijitaalka ah), midabka, iyo sawirrada icon-ka (192x192 iyo 512x512).
+
+2
+Ku xir manifest.json gudaha <head
+">
+Ku dar <link rel="manifest" href="manifest.json"> gudaha <head> ee faylkaaga HTML.
+
+3
+Diiwaangeli Service Worker
+Ku dar Service Worker kooban oo JavaScript ah si browser-ku u aqoonsado in web app-ka la install-gareyn karo (Download / Install App).
+
+4
+Tijaabi badhanka Install / Add to Home Screen
+Markaad ku furto Chrome ama Safari (taleefan ama kombiyuutar), waxaa soo baxaya Install App ama Add to Home Screen, waxaadna ku dari kartaa badhan u gaar ah oo kicinaya beforeinstallprompt.
+
+Qaabka 3: Soo Dejinta Faylka Mashruuca (Download Code-kaaga)
+1
+Hel faylka koodhka
+Tag daaqadda Canvas-ka ee lagu soo bandhigay maktabadda_online.html (ama fur faylkaaga kombiyuutarka).
+
+2
+Guji Download ama Copy
+Guji badhanka Download si faylka .html ugu dego kombiyuutarkaaga, ama guji Copy oo ku dheji fayl cusub oo maktabadda_online.html ah.
+
+3
+Kaydi oo fur browser-ka
+Ku kaydi folder-ka mashruucaaga, kadibna laba-guji (double-click) si aad uga furto browser-ka ama ugu diyaariso Firebase Hosting.
+
+// Import the functions you need from the SDKs you need
+
+import { initializeApp } from "firebase/app";
+
+import { getAnalytics } from "firebase/analytics";
+
+// TODO: Add SDKs for Firebase products that you want to use
+
+// https://firebase.google.com/docs/web/setup#available-libraries
+
+
+
+// Your web app's Firebase configuration
+
+// For Firebase JS SDK v7.20.0 and later, measurementId is optional
+
+const firebaseConfig = {
+
+apiKey: "AIzaSyBJluWwtvb9MeqJ3Q51pFs_KMYzMXqVVpE",
+
+authDomain: "maktada-1d6f0.firebaseapp.com",
+
+databaseURL: "https://maktada-1d6f0-default-rtdb.firebaseio.com",
+
+projectId: "maktada-1d6f0",
+
+storageBucket: "maktada-1d6f0.firebasestorage.app",
+
+messagingSenderId: "377101483059",
+
+appId: "1:377101483059:web:153aa9d0c100063efc3746",
+
+measurementId: "G-SP4K5ZZD8B"
+
+};
+
+
+
+// Initialize Firebase
+
+const app = initializeApp(firebaseConfig);
+
+const analytics = getAnalytics(app);
+
+Waa kuwan furayaashaada dhabta ah ee Firebase (maktada-1d6f0) oo lagu daray koodhka dhammaystiran ee Maktabadda Dhijitaalka ah (Auth + Firestore + Storage + Realtime Database presence + Analytics), iyadoo la isticmaalayo CDN URLs si ay si toos ah ugu shaqayso browser-kaaga adigoon u baahnayn bundler (sida Vite ama Webpack).
+
+Koodhka Dhammaystiran ee firebase-maktabada.js
+JavaScript
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getAnalytics } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-analytics.js";
+import {
+  getAuth,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import {
+  getFirestore,
+  doc,
+  setDoc,
+  getDoc,
+  collection,
+  addDoc,
+  getDocs,
+  deleteDoc,
+  updateDoc,
+  arrayUnion,
+  arrayRemove,
+  serverTimestamp
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import {
+  getStorage,
+  ref,
+  uploadBytes,
+  getDownloadURL
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js";
+import {
+  getDatabase,
+  ref as dbRef,
+  set,
+  onDisconnect,
+  onValue,
+  serverTimestamp as rtdbServerTimestamp
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+
+// Xogta mashruucaaga: maktada-1d6f0
+const firebaseConfig = {
+  apiKey: "AIzaSyBJluWwtvb9MeqJ3Q51pFs_KMYzMXqVVpE",
+  authDomain: "maktada-1d6f0.firebaseapp.com",
+  databaseURL: "https://maktada-1d6f0-default-rtdb.firebaseio.com",
+  projectId: "maktada-1d6f0",
+  storageBucket: "maktada-1d6f0.firebasestorage.app",
+  messagingSenderId: "377101483059",
+  appId: "1:377101483059:web:153aa9d0c100063efc3746",
+  measurementId: "G-SP4K5ZZD8B"
+};
+
+const app = initializeApp(firebaseConfig);
+const analytics = typeof window !== "undefined" ? getAnalytics(app) : null;
+const auth = getAuth(app);
+const db = getFirestore(app);
+const storage = getStorage(app);
+const rtdb = getDatabase(app);
+
+// 1. Diiwaangelin (Sign Up) + Profile-ka Firestore
+export async function registerUser(name, email, password) {
+  const cred = await createUserWithEmailAndPassword(auth, email, password);
+  const uid = cred.user.uid;
+
+  await setDoc(doc(db, "users", uid), {
+    name,
+    email,
+    role: "user",
+    favorites: [],
+    createdAt: serverTimestamp()
+  });
+
+  return cred.user;
+}
+
+// 2. Gelitaan (Log In) & Ka bixid (Log Out)
+export async function loginUser(email, password) {
+  const cred = await signInWithEmailAndPassword(auth, email, password);
+  return cred.user;
+}
+
+export async function logoutUser(uid) {
+  if (uid) {
+    await set(dbRef(rtdb, `status/${uid}`), {
+      online: false,
+      lastSeen: rtdbServerTimestamp()
+    });
+  }
+  await signOut(auth);
+}
+
+// 3. Online / Offline Presence (Realtime Database)
+function setupPresence(uid) {
+  const userStatusRef = dbRef(rtdb, `status/${uid}`);
+  const connectedRef = dbRef(rtdb, ".info/connected");
+
+  onValue(connectedRef, (snap) => {
+    if (snap.val() === false) return;
+
+    onDisconnect(userStatusRef).set({
+      online: false,
+      lastSeen: rtdbServerTimestamp()
+    }).then(() => {
+      set(userStatusRef, {
+        online: true,
+        lastSeen: rtdbServerTimestamp()
+      });
+    });
+  });
+}
+
+// 4. La socodka Auth & Role (admin vs user)
+export function watchAuthAndProfile(onChange) {
+  return onAuthStateChanged(auth, async (user) => {
+    if (!user) {
+      onChange({ user: null, profile: null });
+      return;
+    }
+
+    setupPresence(user.uid);
+    const snap = await getDoc(doc(db, "users", user.uid));
+    const profile = snap.exists()
+      ? snap.data()
+      : { name: user.email, email: user.email, role: "user", favorites: [] };
+
+    onChange({ user, profile });
+  });
+}
+
+// 5. Soo gelinta buug cusub (Storage + Firestore)
+export async function uploadBook({ title, author, category, description, coverFile, bookFile }) {
+  const stamp = Date.now();
+  let coverUrl = "";
+
+  if (coverFile) {
+    const coverRef = ref(storage, `covers/${stamp}_${coverFile.name}`);
+    await uploadBytes(coverRef, coverFile);
+    coverUrl = await getDownloadURL(coverRef);
+  }
+
+  let fileUrl = "";
+  let fileName = "";
+  if (bookFile) {
+    fileName = bookFile.name;
+    const bookRef = ref(storage, `books/${stamp}_${bookFile.name}`);
+    await uploadBytes(bookRef, bookFile);
+    fileUrl = await getDownloadURL(bookRef);
+  }
+
+  const docRef = await addDoc(collection(db, "books"), {
+    title,
+    author,
+    category,
+    description,
+    coverUrl,
+    fileUrl,
+    fileName,
+    createdAt: serverTimestamp()
+  });
+
+  return docRef.id;
+}
+
+// 6. Akhrinta buugagga, Favorites, & Tirtiridda buug
+export async function fetchBooks() {
+  const snap = await getDocs(collection(db, "books"));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+export async function toggleFavorite(uid, bookId, isFavorite) {
+  await updateDoc(doc(db, "users", uid), {
+    favorites: isFavorite ? arrayRemove(bookId) : arrayUnion(bookId)
+  });
+}
+
+export async function removeBook(bookId) {
+  await deleteDoc(doc(db, "books", bookId));
+}
+
+// 7. Admin: Liiska Users + Online/Offline Presence
+export function listenToUsersAndPresence(onUpdate) {
+  let usersList = [];
+  let presenceMap = {};
+
+  const emit = () => {
+    const merged = usersList.map((u) => ({
+      ...u,
+      presence: presenceMap[u.id] || { online: false, lastSeen: null }
+    }));
+    onUpdate(merged);
+  };
+
+  getDocs(collection(db, "users")).then((snap) => {
+    usersList = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    emit();
+  });
+
+  onValue(dbRef(rtdb, "status"), (snap) => {
+    presenceMap = snap.val() || {};
+    emit();
+  });
+}
+Sida Loogu Xiro Bogga HTML
+Ku dar xariggan gudaha HTML-kaaga si uu u soo raro faylka JS ee kor ku xusan:
+
+HTML
+<script type="module" src="./firebase-maktabada.js"></script>
+Fiiro gaar ah: Haddii aad faylkan ka furto file:// (adigoon adeegsan local server ama hosting), ES modules iyo Firebase Auth waxaa laga yaabaa inay ku xannibmaan browser-ka. Ugu yaraan ku fur Live Server (VS Code) ama Firebase Hosting.
+
+Isii prompt ga maktabada.so
+
+Waa kan prompt dhammaystiran oo diyaar ah oo aad koobi gareyn karto si aad ugu dhisto ama ugu horumariso maktabada.so—iyadoo isku daraysa muuqaalka maktabadda dhijitaalka ah, awoodda Admin vs Reader, iyo xiridda Firebase (maktada-1d6f0).
+
+Prompt-ka maktabada.so (Koobi Garee)
+Dhiso web application casri ah oo magaciisu yahay maktabada.so, waana maktabad dhijitaal ah oo Af-Soomaali leh naqshad nadiif ah oo ku habboon kombiyuutarka iyo taleefanka.
+
+1. Gelitaanka & Doorarka (Auth & Roles):
+
+Samee nidaam Log In iyo Sign Up (email iyo password) oo kala saaraya admin iyo user (Reader).
+
+Marka qof cusub is-diiwaangeliyo, wuxuu helaa doorka user. Qofka admin-ka ah wuxuu leeyahay awoodda soo gelinta buugagga, tirtiridda buugagga, iyo aragtida liiska isticmaalayaasha.
+
+2. Maktabadda Buugagga, Akhriska, & Favorites:
+
+Bandhig kaararka buugagga oo leh sawirka jaldiga (cover), cinwaanka, qoraaga, qaybta (category oo ay ku jirto qayb gaar ah oo la qori karo), iyo faahfaahin kooban.
+
+Ku dar raadin degdeg ah (search), shaandhaynta qaybaha, iyo badhanka Favorites si akhristuhu u kaydsado buugagga uu jecel yahay.
+
+Samee Online Reader gudaha bogga ah oo leh beddelidda muuqaalka (Light / Sepia / Dark), cabbirka farta, iyo horudhaca faylasha (PDF / qoraal), iyadoo si cad loo kala saarayo haddii buuggu leeyahay Download ama uu yahay akhris gudaha ah.
+
+3. Qaybta Admin (Geli Buug & Users Online/Offline):
+
+Foom lagu soo geliyo buug cusub oo leh sawirka jaldiga iyo faylka buugga (PDF/EPUB/TXT), iyadoo la muujinayo horudhac (preview) ka hor kaydinta.
+
+Kaar ama qayb Users & Live Status oo muujinaysa tirada isticmaalayaasha, inta Online ah, liiska isticmaalayaasha (Name, Email, Role, Favorites), iyo xaaladda Online / Offline ee tooska ah (Realtime Presence) iyo waqtigii ugu dambeeyay (Last Seen).
+
+4. Ku Xiridda Firebase (maktada-1d6f0):
+
+Ku xir Firebase Authentication, Cloud Firestore (users iyo books), Firebase Storage (covers/ iyo books/), iyo Realtime Database (status/{uid} oo leh onDisconnect).
+
+Ku dar naqshad CSS dhammaystiran oo hal fayl (index.html) ama qaab nadiif ah oo diyaar u ah in lagu publish gareeyo Firebase Hosting ama Vercel ee maktabada.so.
+
+Sida Ugu Fiican Ee Aad Ugu Isticmaali Karto
+Haddii aad rabto inaad ku dhisto Firebase markiiba, ku dar isla prompt-kan furayaashaada mashruuca maktada-1d6f0 ee aad hore u qaadatay.
+
+Haddii aad rabto PWA / App la soo dego oo qofku ku kaydsan karo taleefankiisa ama kombiyuutarkiisa, ku dar jumlad gaaban oo leh: "Ugu dar taageerada PWA (manifest.json iyo Install App) si maktabada.so looga dhigo app la soo dego."
+
+Google Ai studio. Ayaan raba in uu ii dhiso.
+
+Waa fikrad aad u fiican—Google AI Studio waxay aad ugu habboon tahay in laga dhiso web app dhammaystiran oo isla markiiba lagu tijaabin karo (preview) lana dhoofin karo (export / deploy).
+
+Si Google AI Studio ay kuu siiso natiijo nadiif ah oo ay ku dhan yihiin naqshad casri ah, Firebase (maktada-1d6f0), doorka Admin vs. Reader, akhriska buugagga, iyo liiska isticmaalayaasha oo leh Online/Offline, waxaa fiican inaad ku darto tilmaamo cad oo ku saabsan sida loo maareeyo SDK-ga iyo environment/config si uusan u dhicin qalad marka uu koodhka dhisayo.
+
+Prompt-ka Loogu Tala Galay Google AI Studio (maktabada.so)
+Build a complete, responsive Somali digital library web application called maktabada.so with a clean, modern UI and full CSS styling (suitable for both desktop and mobile).
+
+Core Features & Roles:
+
+Authentication & Roles (admin vs user):
+
+Email/Password Sign Up and Log In flow.
+
+New sign-ups default to role: "user".
+
+Users with role: "admin" can upload books, delete books, and view the Users & Live Presence panel. Regular user accounts can browse, search, filter, favorite, read online, and download books (when enabled).
+
+Library Catalog, Search, Favorites & Reader:
+
+Book cards displaying cover image (with fallback gradient cover if none is uploaded), title, author, category (including custom category input), and description.
+
+Live search input, category filter pills, and a Favorites toggle/filter saved per user.
+
+Built-in Online Reader modal/view with theme switcher (Light / Sepia / Dark), font size controls, and PDF/file viewer (<iframe> / text preview), plus a Download button.
+
+Admin Panel (Upload Book & Users Online/Offline):
+
+Form to add a new book with title, author, category (or custom category), description, cover image file upload (covers/), and book file upload (books/ - PDF/EPUB/TXT), including a live preview before saving.
+
+Users & Live Status section showing total users, online count, a table of users (Name, Email, Role, Favorites count), and real-time Online / Offline status plus lastSeen timestamp.
+
+Firebase Integration (maktada-1d6f0):
+
+Wire up Firebase Authentication, Cloud Firestore (users and books), Firebase Storage (covers/ and books/), and Realtime Database (status/{uid} with onDisconnect presence).
+
+Use clean modular JavaScript (ES modules via CDN or standard Vite/web structure) with this exact Firebase configuration:
+
+apiKey: "AIzaSyBJluWwtvb9MeqJ3Q51pFs_KMYzMXqVVpE"
+
+authDomain: "maktada-1d6f0.firebaseapp.com"
+
+databaseURL: "[https://maktada-1d6f0-default-rtdb.firebaseio.com](https://maktada-1d6f0-default-rtdb.firebaseio.com)"
+
+projectId: "maktada-1d6f0"
+
+storageBucket: "maktada-1d6f0.firebasestorage.app"
+
+messagingSenderId: "377101483059"
+
+appId: "1:377101483059:web:153aa9d0c100063efc3746"
+
+measurementId: "G-SP4K5ZZD8B"
+
+Include clear instructions on how to set a user's role to "admin" in Firestore and how to deploy to Firebase Hosting.

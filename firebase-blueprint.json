@@ -1,0 +1,369 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Registered reader or administrator profile for maktabada.so, including role, saved favorite book IDs, and presence metadata.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Authentication UID matching the document ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name of the reader or administrator.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "User email address (PII - restricted to owner and admins).",
+          "minLength": 3,
+          "maxLength": 180
+        },
+        "role": {
+          "type": "string",
+          "description": "Access control role for maktabada.so.",
+          "enum": ["user", "admin"]
+        },
+        "bio": {
+          "type": "string",
+          "description": "Short personal bio written by the reader.",
+          "minLength": 0,
+          "maxLength": 400
+        },
+        "avatarUrl": {
+          "type": "string",
+          "description": "Firebase Storage URL, HTTPS image URL, or compact resized avatar thumbnail for the user's profile picture.",
+          "minLength": 0,
+          "maxLength": 12000
+        },
+        "favorites": {
+          "type": "array",
+          "description": "Bounded list of book IDs favorited by the user (max 100)."
+        },
+        "online": {
+          "type": "boolean",
+          "description": "Whether the user is currently active in the library."
+        },
+        "lastSeen": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the user's most recent presence update."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable account creation server timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the latest profile update."
+        }
+      },
+      "required": ["uid", "name", "email", "role", "favorites", "online", "lastSeen", "createdAt", "updatedAt"]
+    },
+    "Book": {
+      "title": "Book",
+      "description": "Digital book or monograph entry in the maktabada.so catalog.",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Book title in Somali or other supported languages.",
+          "minLength": 1,
+          "maxLength": 180
+        },
+        "author": {
+          "type": "string",
+          "description": "Author or editor name.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "category": {
+          "type": "string",
+          "description": "Subject category (standard or custom).",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "description": {
+          "type": "string",
+          "description": "Short synopsis of the book.",
+          "minLength": 0,
+          "maxLength": 2000
+        },
+        "coverUrl": {
+          "type": "string",
+          "description": "Firebase Storage URL or local bundled asset path for the cover image.",
+          "maxLength": 2000
+        },
+        "fileUrl": {
+          "type": "string",
+          "description": "Firebase Storage URL for the downloadable/previewable book file (PDF/EPUB/TXT).",
+          "maxLength": 2000
+        },
+        "fileName": {
+          "type": "string",
+          "description": "Original filename of the uploaded book document.",
+          "maxLength": 255
+        },
+        "fileType": {
+          "type": "string",
+          "description": "Format of the book file (pdf, epub, txt, article).",
+          "enum": ["pdf", "epub", "txt", "article"]
+        },
+        "allowDownload": {
+          "type": "boolean",
+          "description": "Controls whether readers can download the file or read online only."
+        },
+        "published": {
+          "type": "boolean",
+          "description": "Controls visibility in the public catalog."
+        },
+        "contentText": {
+          "type": "string",
+          "description": "Readable text body for the built-in online reader.",
+          "maxLength": 50000
+        },
+        "createdBy": {
+          "type": "string",
+          "description": "UID of the admin who added the book.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ratingSum": {
+          "type": "integer",
+          "description": "Cumulative sum of all user star ratings (1-5) for this book."
+        },
+        "ratingCount": {
+          "type": "integer",
+          "description": "Total number of user star ratings submitted for this book."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable server timestamp when the book was published."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the latest book metadata update."
+        }
+      },
+      "required": [
+        "title",
+        "author",
+        "category",
+        "description",
+        "coverUrl",
+        "fileUrl",
+        "fileName",
+        "fileType",
+        "allowDownload",
+        "published",
+        "contentText",
+        "createdBy",
+        "ratingSum",
+        "ratingCount",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "BookRating": {
+      "title": "BookRating",
+      "description": "Individual signed-in reader star rating (1 to 5) for a book.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "UID of the reader who submitted the rating.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "bookId": {
+          "type": "string",
+          "description": "ID of the rated book document.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "rating": {
+          "type": "integer",
+          "description": "Star rating from 1 to 5."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable server timestamp when the rating was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the latest rating update."
+        }
+      },
+      "required": ["userId", "bookId", "rating", "createdAt", "updatedAt"]
+    },
+    "ReadingProgress": {
+      "title": "ReadingProgress",
+      "description": "Tracks a signed-in reader's current page and percentage progress for a book.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "UID of the reader.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "bookId": {
+          "type": "string",
+          "description": "ID of the book being read.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "percentage": {
+          "type": "integer",
+          "description": "Reading completion percentage from 0 to 100."
+        },
+        "currentPage": {
+          "type": "integer",
+          "description": "Current page number (1 to totalPages)."
+        },
+        "totalPages": {
+          "type": "integer",
+          "description": "Estimated or configured total page count (1 to 10000)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable server timestamp when reading progress was first recorded."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the latest reading progress update."
+        }
+      },
+      "required": ["userId", "bookId", "percentage", "currentPage", "totalPages", "createdAt", "updatedAt"]
+    },
+    "BookComment": {
+      "title": "BookComment",
+      "description": "Reader discussion comment on a published book in maktabada.so.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "UID of the reader who wrote the comment.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "bookId": {
+          "type": "string",
+          "description": "ID of the parent book document.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "authorName": {
+          "type": "string",
+          "description": "Public display name of the commenter (no email/PII).",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "text": {
+          "type": "string",
+          "description": "Comment body text.",
+          "minLength": 1,
+          "maxLength": 1500
+        },
+        "published": {
+          "type": "boolean",
+          "description": "Visibility flag synced with the published parent book."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable server timestamp when the comment was posted."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the latest comment edit."
+        }
+      },
+      "required": ["userId", "bookId", "authorName", "text", "published", "createdAt", "updatedAt"]
+    },
+    "DailyReadingLog": {
+      "title": "DailyReadingLog",
+      "description": "Tracks total active reading seconds per calendar day for a signed-in user to calculate their 15-minute daily reading streak.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "UID of the reader.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "dateKey": {
+          "type": "string",
+          "description": "Local calendar date key in YYYY-MM-DD format.",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "secondsRead": {
+          "type": "integer",
+          "description": "Total active reading seconds accumulated on this date (0 to 86400)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable server timestamp when the daily reading log was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the latest daily reading time update."
+        }
+      },
+      "required": ["userId", "dateKey", "secondsRead", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User profiles, role assignments, favorite book lists, and Firestore presence mirror."
+    },
+    "/users/{userId}/progress/{bookId}": {
+      "schema": { "$ref": "#/entities/ReadingProgress" },
+      "description": "Per-user per-book reading page and percentage progress for resuming where the user left off."
+    },
+    "/users/{userId}/readingLogs/{dateKey}": {
+      "schema": { "$ref": "#/entities/DailyReadingLog" },
+      "description": "Per-user per-day active reading seconds for computing consecutive 15-minute reading streaks."
+    },
+    "/books/{bookId}": {
+      "schema": { "$ref": "#/entities/Book" },
+      "description": "Digital library catalog of books, covers, aggregate star ratings, and reader text."
+    },
+    "/books/{bookId}/ratings/{userId}": {
+      "schema": { "$ref": "#/entities/BookRating" },
+      "description": "Per-user star ratings (1-5) synchronized atomically with the parent book's ratingSum and ratingCount."
+    },
+    "/books/{bookId}/comments/{commentId}": {
+      "schema": { "$ref": "#/entities/BookComment" },
+      "description": "Reader discussion comments on published books."
+    }
+  }
+}
