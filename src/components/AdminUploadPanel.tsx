@@ -1,8 +1,9 @@
 import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
-import { Upload, CheckCircle2, Image as ImageIcon, FileText, X, Link2, Loader2 } from 'lucide-react';
+import { Upload, CheckCircle2, Image as ImageIcon, FileText, X, FolderGit2, Loader2 } from 'lucide-react';
 import { createBookRecord, extractErrorMessage } from '../services/libraryService';
 import { BLUEPRINT_LIMITS, type BookFileType } from '../types';
 import { BookCover } from './BookCover';
+import { GitHubHostPicker } from './GitHubHostPicker';
 
 interface AdminUploadPanelProps {
   adminUid: string;
@@ -35,7 +36,7 @@ export function AdminUploadPanel({
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [coverPreviewUrl, setCoverPreviewUrl] = useState('');
   const [bookFile, setBookFile] = useState<File | null>(null);
-  const [showExternalUrls, setShowExternalUrls] = useState(false);
+  const [showExternalUrls, setShowExternalUrls] = useState(true);
   const [coverFallbackUrl, setCoverFallbackUrl] = useState('');
   const [fileFallbackUrl, setFileFallbackUrl] = useState('');
 
@@ -349,52 +350,36 @@ export function AdminUploadPanel({
                 onClick={() => setShowExternalUrls((v) => !v)}
                 className="inline-flex items-center gap-1.5 text-xs font-medium text-[#14532D] dark:text-[#4ADE80] hover:underline"
               >
-                <Link2 className="w-3.5 h-3.5" />
+                <FolderGit2 className="w-3.5 h-3.5" />
                 <span>
                   {showExternalUrls
-                    ? 'Qari link-yada tooska ah (HTTPS)'
-                    : 'Ama geli Link toos ah (haddii Storage xiran yahay)'}
+                    ? 'Qari GitHub Free Host / Link-yada Tooska ah'
+                    : 'Isticmaal GitHub Free Host (0$) ama Link Toos ah'}
                 </span>
               </button>
             </div>
 
             {showExternalUrls && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-4 rounded-xl bg-[#F8F6F1]/70 dark:bg-[#141312] border border-[#E5E0D5] dark:border-[#2E2C29]">
-                <div>
-                  <label
-                    htmlFor="book-cover-url"
-                    className="block text-xs font-medium text-[#44403C] dark:text-[#D6D3CD] mb-1"
-                  >
-                    Link-ga Sawirka Jaldiga (HTTPS)
-                  </label>
-                  <input
-                    id="book-cover-url"
-                    type="url"
-                    maxLength={BLUEPRINT_LIMITS.book.urlMax}
-                    value={coverFallbackUrl}
-                    onChange={(e) => setCoverFallbackUrl(e.target.value)}
-                    placeholder="https://.../cover.jpg"
-                    className="w-full px-3 py-2 bg-white dark:bg-[#1C1B19] border border-[#D6CEBE] dark:border-[#383531] rounded-lg text-xs text-[#1C1917] dark:text-[#F5F2EB] focus:outline-none focus:ring-2 focus:ring-[#14532D]/30 focus:border-[#14532D]"
-                  />
-                </div>
-                <div>
-                  <label
-                    htmlFor="book-file-url"
-                    className="block text-xs font-medium text-[#44403C] dark:text-[#D6D3CD] mb-1"
-                  >
-                    Link-ga Faylka Buugga (PDF/EPUB HTTPS)
-                  </label>
-                  <input
-                    id="book-file-url"
-                    type="url"
-                    maxLength={BLUEPRINT_LIMITS.book.urlMax}
-                    value={fileFallbackUrl}
-                    onChange={(e) => setFileFallbackUrl(e.target.value)}
-                    placeholder="https://.../buug.pdf"
-                    className="w-full px-3 py-2 bg-white dark:bg-[#1C1B19] border border-[#D6CEBE] dark:border-[#383531] rounded-lg text-xs text-[#1C1917] dark:text-[#F5F2EB] focus:outline-none focus:ring-2 focus:ring-[#14532D]/30 focus:border-[#14532D]"
-                  />
-                </div>
-              </div>
+              <GitHubHostPicker
+                disabled={submitting}
+                coverUrl={coverFallbackUrl}
+                fileUrl={fileFallbackUrl}
+                onCoverUrlChange={(url) => {
+                  setCoverFallbackUrl(url);
+                  if (url) setCoverFile(null);
+                }}
+                onFileUrlChange={(url, meta) => {
+                  setFileFallbackUrl(url);
+                  if (url) setBookFile(null);
+                  if (meta?.fileType) setFileType(meta.fileType);
+                  if (meta?.suggestedTitle && !title.trim()) {
+                    setTitle(meta.suggestedTitle);
+                  }
+                  if (meta?.extractedText && !contentText.trim()) {
+                    setContentText(meta.extractedText);
+                  }
+                }}
+              />
             )}
           </div>
 

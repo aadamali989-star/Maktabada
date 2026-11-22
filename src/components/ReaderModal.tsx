@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import type { Book, ReaderTheme, ReadingProgress } from '../types';
 import { triggerBookDownload } from '../services/libraryService';
+import { normalizeGitHubAssetUrl } from '../services/githubHostService';
 import { StarRating } from './StarRating';
 import { BookComments } from './BookComments';
 
@@ -381,9 +382,10 @@ export function ReaderModal({
     .map((p) => p.trim())
     .filter(Boolean);
 
+  const normalizedFileUrl = normalizeGitHubAssetUrl(book.fileUrl || '');
   const iframeSrc = book.allowDownload
-    ? `${book.fileUrl}#page=${currentPage}`
-    : `${book.fileUrl}#toolbar=0&navpanes=0&page=${currentPage}`;
+    ? `${normalizedFileUrl}#page=${currentPage}`
+    : `${normalizedFileUrl}#toolbar=0&navpanes=0&page=${currentPage}`;
 
   return (
     <div
@@ -655,7 +657,7 @@ export function ReaderModal({
                   />
                   {book.allowDownload && (
                     <a
-                      href={book.fileUrl}
+                      href={normalizedFileUrl}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="inline-flex items-center gap-1 underline hover:opacity-80"
@@ -665,7 +667,7 @@ export function ReaderModal({
                   )}
                 </div>
               </div>
-              {!isOnline && !book.fileUrl.startsWith('data:') ? (
+              {!isOnline && !normalizedFileUrl.startsWith('data:') ? (
                 <div className="flex-1 flex flex-col items-center justify-center p-8 text-center max-w-md mx-auto">
                   <WifiOff className={`w-8 h-8 mb-3 ${styles.muted}`} />
                   <h3 className="font-serif text-lg font-semibold mb-2">

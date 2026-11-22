@@ -1,7 +1,8 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { FileText, Image as ImageIcon, Loader2, Save, X } from 'lucide-react';
+import { FileText, FolderGit2, Image as ImageIcon, Loader2, Save, X } from 'lucide-react';
 import { extractErrorMessage, updateBookRecord } from '../services/libraryService';
 import { BLUEPRINT_LIMITS, type Book, type BookFileType } from '../types';
+import { GitHubHostPicker } from './GitHubHostPicker';
 
 interface AdminBookEditModalProps {
   book: Book | null;
@@ -32,6 +33,9 @@ export function AdminBookEditModal({
   const [contentText, setContentText] = useState(book?.contentText || '');
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [bookFile, setBookFile] = useState<File | null>(null);
+  const [coverUrlInput, setCoverUrlInput] = useState(book?.coverUrl || '');
+  const [fileUrlInput, setFileUrlInput] = useState(book?.fileUrl || '');
+  const [showGitHubHost, setShowGitHubHost] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
@@ -48,6 +52,8 @@ export function AdminBookEditModal({
     setContentText(book.contentText || '');
     setCoverFile(null);
     setBookFile(null);
+    setCoverUrlInput(book.coverUrl || '');
+    setFileUrlInput(book.fileUrl || '');
     setErrorMsg('');
   }, [book]);
 
@@ -86,6 +92,8 @@ export function AdminBookEditModal({
         existingCoverUrl: book.coverUrl || '',
         existingFileUrl: book.fileUrl || '',
         existingFileName: book.fileName || '',
+        coverFallbackUrl: coverUrlInput,
+        fileFallbackUrl: fileUrlInput,
         coverFile,
         bookFile,
         onProgress: (status) => setSaveStatus(status),
@@ -300,6 +308,41 @@ export function AdminBookEditModal({
                 </button>
               )}
             </div>
+          </div>
+
+          <div className="space-y-3">
+            <button
+              type="button"
+              onClick={() => setShowGitHubHost((v) => !v)}
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-[#14532D] dark:text-[#4ADE80] hover:underline"
+            >
+              <FolderGit2 className="w-3.5 h-3.5" />
+              <span>
+                {showGitHubHost
+                  ? 'Qari GitHub Free Host / Link-yada Tooska ah'
+                  : 'Isticmaal GitHub Free Host (0$) ama Beddel Link-ga'}
+              </span>
+            </button>
+
+            {showGitHubHost && (
+              <GitHubHostPicker
+                disabled={saving}
+                coverUrl={coverUrlInput}
+                fileUrl={fileUrlInput}
+                onCoverUrlChange={(url) => {
+                  setCoverUrlInput(url);
+                  if (url) setCoverFile(null);
+                }}
+                onFileUrlChange={(url, meta) => {
+                  setFileUrlInput(url);
+                  if (url) setBookFile(null);
+                  if (meta?.fileType) setFileType(meta.fileType);
+                  if (meta?.extractedText && !contentText.trim()) {
+                    setContentText(meta.extractedText);
+                  }
+                }}
+              />
+            )}
           </div>
 
           <div>

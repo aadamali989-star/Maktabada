@@ -57,6 +57,7 @@ import {
   type UserRole,
 } from '../types';
 import { STARTER_BOOKS } from '../data/starterBooks';
+import { normalizeGitHubAssetUrl } from './githubHostService';
 
 const BOOTSTRAPPED_ADMIN_EMAIL = 'aadamali989@gmail.com';
 
@@ -100,15 +101,15 @@ async function withTimeout<T>(
 }
 
 function validateOptionalHttpUrl(rawUrl: string | undefined, label: string): string {
-  const trimmed = (rawUrl || '').trim();
-  if (!trimmed) return '';
-  if (!trimmed.startsWith('https://') && !trimmed.startsWith('http://')) {
+  const normalized = normalizeGitHubAssetUrl((rawUrl || '').trim());
+  if (!normalized) return '';
+  if (!normalized.startsWith('https://') && !normalized.startsWith('http://')) {
     throw new Error(`${label} waa inuu ku bilaabmaa https:// ama http://`);
   }
-  if (trimmed.length > BLUEPRINT_LIMITS.book.urlMax) {
+  if (normalized.length > BLUEPRINT_LIMITS.book.urlMax) {
     throw new Error(`${label} wuu ka dheer yahay xadka (${BLUEPRINT_LIMITS.book.urlMax} xaraf).`);
   }
-  return trimmed;
+  return normalized;
 }
 
 function formatStorageUploadError(err: unknown, itemLabel: string): Error {
@@ -1011,6 +1012,8 @@ export interface UpdateBookInput {
   existingCoverUrl: string;
   existingFileUrl: string;
   existingFileName: string;
+  coverFallbackUrl?: string;
+  fileFallbackUrl?: string;
   coverFile?: File | null;
   bookFile?: File | null;
   onProgress?: (statusLabel: string) => void;
@@ -1052,7 +1055,11 @@ export async function updateBookRecord(
   }
 
   const stamp = Date.now();
-  let coverUrl = sanitizeString(input.existingCoverUrl || '', BLUEPRINT_LIMITS.book.urlMax);
+  let coverUrl =
+    input.coverFallbackUrl !== undefined
+      ? validateOptionalHttpUrl(input.coverFallbackUrl, 'Link-ga sawirka jaldiga')
+      : sanitizeString(input.existingCoverUrl || '', BLUEPRINT_LIMITS.book.urlMax);
+
   if (input.coverFile) {
     input.onProgress?.('Soo gelinaya jaldiga (0%)...');
     const safeCoverName = sanitizeFileName(input.coverFile.name);
@@ -1067,8 +1074,17 @@ export async function updateBookRecord(
     coverUrl = sanitizeString(uploadedCover, BLUEPRINT_LIMITS.book.urlMax);
   }
 
-  let fileUrl = sanitizeString(input.existingFileUrl || '', BLUEPRINT_LIMITS.book.urlMax);
+  let fileUrl =
+    input.fileFallbackUrl !== undefined
+      ? validateOptionalHttpUrl(input.fileFallbackUrl, 'Link-ga faylka buugga')
+      : sanitizeString(input.existingFileUrl || '', BLUEPRINT_LIMITS.book.urlMax);
   let fileName = sanitizeString(input.existingFileName || '', BLUEPRINT_LIMITS.book.fileNameMax);
+  if (fileUrl && !input.bookFile && input.fileFallbackUrl !== undefined && fileUrl !== input.existingFileUrl) {
+    const cleanUrlPart = fileUrl.split('?')[0].split('/').pop() || '';
+    if (cleanUrlPart) {
+      fileName = sanitizeString(decodeURIComponent(cleanUrlPart), BLUEPRINT_LIMITS.book.fileNameMax);
+    }
+  }
   let contentText = input.contentText;
   const isTextBookFile = Boolean(
     input.bookFile &&
@@ -1769,7 +1785,7 @@ export function triggerBookDownload(book: Book): void {
 
   if (book.fileUrl) {
     const link = document.createElement('a');
-    link.href = book.fileUrl;
+    link.href = normalizeGitHubAssetUrl(book.fileUrl);
     link.download = book.fileName || `${book.title}.pdf`;
     link.target = '_blank';
     link.rel = 'noopener noreferrer';

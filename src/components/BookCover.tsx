@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { BookOpen } from 'lucide-react';
+import { normalizeGitHubAssetUrl } from '../services/githubHostService';
 
 interface BookCoverProps {
   src?: string;
@@ -18,15 +19,16 @@ const FALLBACK_PALETTES = [
 
 export function BookCover({ src, title, author, category, className = '' }: BookCoverProps) {
   const [hasError, setHasError] = useState(false);
+  const resolvedSrc = src ? normalizeGitHubAssetUrl(src) : '';
 
   useEffect(() => {
     setHasError(false);
-  }, [src]);
+  }, [resolvedSrc]);
 
   const hash = Array.from(title || 'Maktabada').reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
   const gradient = FALLBACK_PALETTES[hash % FALLBACK_PALETTES.length];
 
-  if (!src || hasError) {
+  if (!resolvedSrc || hasError) {
     return (
       <div
         className={`relative w-full aspect-[3/4] bg-gradient-to-br ${gradient} text-[#F8F6F1] flex flex-col justify-between p-5 select-none overflow-hidden ${className}`}
@@ -51,7 +53,7 @@ export function BookCover({ src, title, author, category, className = '' }: Book
   return (
     <div className={`relative w-full aspect-[3/4] bg-[#EFECE5] overflow-hidden ${className}`}>
       <img
-        src={src}
+        src={resolvedSrc}
         alt={`Jaldiga buugga ${title}`}
         referrerPolicy="no-referrer"
         onError={() => setHasError(true)}
