@@ -55,6 +55,7 @@ import { AdminPanel } from './components/AdminPanel';
 import { RecentlyRead, type RecentlyReadItem } from './components/RecentlyRead';
 import { ProfileDrawer } from './components/ProfileDrawer';
 import { UserAvatar } from './components/UserAvatar';
+import { PWAInstallButton } from './components/PWAInstallButton';
 
 const READER_DARK_MODE_KEY = 'maktabada_reader_dark_mode';
 const RECENTLY_READ_STORAGE_PREFIX = 'maktabada_recently_read_';
@@ -706,8 +707,9 @@ export default function App() {
             ))}
           </nav>
 
-          {/* Zone 3: Site-wide Dark Mode toggle, Profile Drawer trigger & auth action */}
+          {/* Zone 3: PWA Install, Site-wide Dark Mode toggle, Profile Drawer trigger & auth action */}
           <div className="flex items-center gap-2 shrink-0">
+            <PWAInstallButton />
             <button
               type="button"
               onClick={() => handleSetReaderDarkMode()}

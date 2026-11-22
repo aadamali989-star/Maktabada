@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { FileText, Image as ImageIcon, Save, X } from 'lucide-react';
-import { updateBookRecord } from '../services/libraryService';
+import { FileText, Image as ImageIcon, Loader2, Save, X } from 'lucide-react';
+import { extractErrorMessage, updateBookRecord } from '../services/libraryService';
 import { BLUEPRINT_LIMITS, type Book, type BookFileType } from '../types';
 
 interface AdminBookEditModalProps {
@@ -33,6 +33,7 @@ export function AdminBookEditModal({
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [bookFile, setBookFile] = useState<File | null>(null);
   const [saving, setSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
   useEffect(() => {
@@ -71,6 +72,7 @@ export function AdminBookEditModal({
     }
 
     setSaving(true);
+    setSaveStatus('Hubinaya xogta...');
     try {
       await updateBookRecord(book.id, {
         title,
@@ -86,18 +88,20 @@ export function AdminBookEditModal({
         existingFileName: book.fileName || '',
         coverFile,
         bookFile,
+        onProgress: (status) => setSaveStatus(status),
       });
       onSaved(`Buugga "${title.trim()}" waa la cusboonaysiiyay.`);
       onClose();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = extractErrorMessage(err);
       setErrorMsg(
-        msg.includes('storage/')
-          ? 'Firebase Storage upload waa la diiday. Hubi Storage Rules ama kaydi adigoon fayl cusub soo gelin.'
+        msg.includes('storage/') || msg.includes('Firebase Storage')
+          ? msg
           : `Cusboonaysiintu way fashilantay: ${msg}`
       );
     } finally {
       setSaving(false);
+      setSaveStatus('');
     }
   };
 
@@ -231,37 +235,71 @@ export function AdminBookEditModal({
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <label className="block border border-dashed border-[#D6CEBE] dark:border-[#383531] rounded-xl p-3.5 bg-[#F8F6F1]/70 dark:bg-[#141312] hover:bg-[#EFECE5]/60 dark:hover:bg-[#242320] transition-colors cursor-pointer">
-              <div className="flex items-center gap-2 text-xs font-medium text-[#1C1917] dark:text-[#F5F2EB] mb-1">
-                <ImageIcon className="w-3.5 h-3.5 text-[#14532D] dark:text-[#4ADE80]" />
-                <span>Beddel Sawirka Jaldiga (Ikhtiyaari)</span>
-              </div>
-              <p className="text-xs text-[#78716C] dark:text-[#A8A29E] truncate">
-                {coverFile ? coverFile.name : book.coverUrl ? 'Sawir hore wuu jiraa' : 'Dooro sawir cusub'}
-              </p>
-              <input
-                type="file"
-                accept="image/*"
-                onChange={(e) => setCoverFile(e.target.files?.[0] || null)}
-                className="sr-only"
-              />
-            </label>
+            <div className="relative">
+              <label className="block border border-dashed border-[#D6CEBE] dark:border-[#383531] rounded-xl p-3.5 pr-9 bg-[#F8F6F1]/70 dark:bg-[#141312] hover:bg-[#EFECE5]/60 dark:hover:bg-[#242320] transition-colors cursor-pointer">
+                <div className="flex items-center gap-2 text-xs font-medium text-[#1C1917] dark:text-[#F5F2EB] mb-1">
+                  <ImageIcon className="w-3.5 h-3.5 text-[#14532D] dark:text-[#4ADE80]" />
+                  <span>Beddel Sawirka Jaldiga (Ikhtiyaari)</span>
+                </div>
+                <p className="text-xs text-[#78716C] dark:text-[#A8A29E] truncate">
+                  {coverFile ? coverFile.name : book.coverUrl ? 'Sawir hore wuu jiraa' : 'Dooro sawir cusub'}
+                </p>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0] || null;
+                    e.target.value = '';
+                    setCoverFile(file);
+                  }}
+                  className="sr-only"
+                />
+              </label>
+              {coverFile && !saving && (
+                <button
+                  type="button"
+                  onClick={() => setCoverFile(null)}
+                  aria-label="Ka saar sawirka cusub"
+                  title="Ka saar sawirka"
+                  className="absolute top-2.5 right-2.5 p-1 rounded-md text-[#78716C] hover:text-[#1C1917] dark:text-[#A8A29E] dark:hover:text-[#F5F2EB] hover:bg-[#EFECE5] dark:hover:bg-[#292724]"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
 
-            <label className="block border border-dashed border-[#D6CEBE] dark:border-[#383531] rounded-xl p-3.5 bg-[#F8F6F1]/70 dark:bg-[#141312] hover:bg-[#EFECE5]/60 dark:hover:bg-[#242320] transition-colors cursor-pointer">
-              <div className="flex items-center gap-2 text-xs font-medium text-[#1C1917] dark:text-[#F5F2EB] mb-1">
-                <FileText className="w-3.5 h-3.5 text-[#14532D] dark:text-[#4ADE80]" />
-                <span>Beddel Faylka Buugga (Ikhtiyaari)</span>
-              </div>
-              <p className="text-xs text-[#78716C] dark:text-[#A8A29E] truncate">
-                {bookFile ? bookFile.name : book.fileName || 'Dooro fayl cusub'}
-              </p>
-              <input
-                type="file"
-                accept=".pdf,.epub,.txt,.md,application/pdf,text/plain"
-                onChange={(e) => setBookFile(e.target.files?.[0] || null)}
-                className="sr-only"
-              />
-            </label>
+            <div className="relative">
+              <label className="block border border-dashed border-[#D6CEBE] dark:border-[#383531] rounded-xl p-3.5 pr-9 bg-[#F8F6F1]/70 dark:bg-[#141312] hover:bg-[#EFECE5]/60 dark:hover:bg-[#242320] transition-colors cursor-pointer">
+                <div className="flex items-center gap-2 text-xs font-medium text-[#1C1917] dark:text-[#F5F2EB] mb-1">
+                  <FileText className="w-3.5 h-3.5 text-[#14532D] dark:text-[#4ADE80]" />
+                  <span>Beddel Faylka Buugga (Ikhtiyaari)</span>
+                </div>
+                <p className="text-xs text-[#78716C] dark:text-[#A8A29E] truncate">
+                  {bookFile ? bookFile.name : book.fileName || 'Dooro fayl cusub'}
+                </p>
+                <input
+                  type="file"
+                  accept=".pdf,.epub,.txt,.md,application/pdf,text/plain"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0] || null;
+                    e.target.value = '';
+                    setBookFile(file);
+                  }}
+                  className="sr-only"
+                />
+              </label>
+              {bookFile && !saving && (
+                <button
+                  type="button"
+                  onClick={() => setBookFile(null)}
+                  aria-label="Ka saar faylka cusub"
+                  title="Ka saar faylka"
+                  className="absolute top-2.5 right-2.5 p-1 rounded-md text-[#78716C] hover:text-[#1C1917] dark:text-[#A8A29E] dark:hover:text-[#F5F2EB] hover:bg-[#EFECE5] dark:hover:bg-[#292724]"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
           </div>
 
           <div>
@@ -313,8 +351,12 @@ export function AdminBookEditModal({
               disabled={saving}
               className="inline-flex items-center gap-1.5 px-5 py-2 text-xs font-medium bg-[#14532D] dark:bg-[#15803D] text-white rounded-lg hover:bg-[#0F3F22] dark:hover:bg-[#166534] transition-colors disabled:opacity-50"
             >
-              <Save className="w-3.5 h-3.5" />
-              <span>{saving ? 'Kaydinaya...' : 'Kaydi Isbeddelka'}</span>
+              {saving ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Save className="w-3.5 h-3.5" />
+              )}
+              <span>{saving ? saveStatus || 'Kaydinaya...' : 'Kaydi Isbeddelka'}</span>
             </button>
           </div>
         </form>

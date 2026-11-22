@@ -35,6 +35,10 @@ function formatAuthError(err: unknown): string {
   if (raw.includes('auth/weak-password')) {
     return 'Password-ku waa inuu ka koobnaado ugu yaraan 6 xaraf.';
   }
+  if (raw.includes('auth/unauthorized-domain')) {
+    const host = typeof window !== 'undefined' ? window.location.hostname : 'domain-kan';
+    return `Domain-kan (${host}) weli loogama oggolaan Firebase Authentication. Ku dar "${host}" gudaha Firebase Console → Authentication → Settings → Authorized domains.`;
+  }
   if (raw.includes('auth/popup-closed-by-user')) {
     return 'Daaqadda gelitaanka Google waa la xiray ka hor intaan la dhammaystirin.';
   }

@@ -1,6 +1,6 @@
 import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
-import { Upload, CheckCircle2, Image as ImageIcon, FileText } from 'lucide-react';
-import { createBookRecord } from '../services/libraryService';
+import { Upload, CheckCircle2, Image as ImageIcon, FileText, X, Link2, Loader2 } from 'lucide-react';
+import { createBookRecord, extractErrorMessage } from '../services/libraryService';
 import { BLUEPRINT_LIMITS, type BookFileType } from '../types';
 import { BookCover } from './BookCover';
 
@@ -35,8 +35,12 @@ export function AdminUploadPanel({
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [coverPreviewUrl, setCoverPreviewUrl] = useState('');
   const [bookFile, setBookFile] = useState<File | null>(null);
+  const [showExternalUrls, setShowExternalUrls] = useState(false);
+  const [coverFallbackUrl, setCoverFallbackUrl] = useState('');
+  const [fileFallbackUrl, setFileFallbackUrl] = useState('');
 
   const [submitting, setSubmitting] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
 
@@ -56,6 +60,7 @@ export function AdminUploadPanel({
 
   const handleBookFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0] || null;
+    e.target.value = '';
     setBookFile(file);
     if (!file) return;
 
@@ -88,6 +93,7 @@ export function AdminUploadPanel({
     }
 
     setSubmitting(true);
+    setUploadStatus('Hubinaya xogta buugga...');
     try {
       await createBookRecord({
         title,
@@ -99,7 +105,10 @@ export function AdminUploadPanel({
         contentText,
         coverFile,
         bookFile,
+        coverFallbackUrl,
+        fileFallbackUrl,
         adminUid,
+        onProgress: (status) => setUploadStatus(status),
       });
 
       setTitle('');
@@ -110,19 +119,20 @@ export function AdminUploadPanel({
       setUseCustomCategory(false);
       setCoverFile(null);
       setBookFile(null);
+      setCoverFallbackUrl('');
+      setFileFallbackUrl('');
       setSuccessMsg('Buugga cusub si guul leh ayaa loogu kaydiyay maktabada.so!');
       onPublished();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('storage/unauthorized') || msg.includes('storage/')) {
-        setErrorMsg(
-          'Firebase Storage upload waa la diiday ama weli lama daarin. Hubi Firebase Console -> Storage -> Rules, ama geli qoraalka buugga adigoon soo gelin fayl.'
-        );
-      } else {
-        setErrorMsg(`Kaydintu way fashilantay: ${msg}`);
-      }
+      const msg = extractErrorMessage(err);
+      setErrorMsg(
+        msg.includes('storage/') || msg.includes('Firebase Storage')
+          ? msg
+          : `Kaydintu way fashilantay: ${msg}`
+      );
     } finally {
       setSubmitting(false);
+      setUploadStatus('');
     }
   };
 
@@ -268,38 +278,124 @@ export function AdminUploadPanel({
           </div>
 
           {/* File Uploads */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-            <label className="block border border-dashed border-[#D6CEBE] dark:border-[#383531] rounded-xl p-4 bg-[#F8F6F1]/70 dark:bg-[#141312] hover:bg-[#EFECE5]/60 dark:hover:bg-[#242320] transition-colors cursor-pointer">
-              <div className="flex items-center gap-2.5 text-xs font-medium text-[#1C1917] dark:text-[#F5F2EB] mb-1">
-                <ImageIcon className="w-4 h-4 text-[#14532D] dark:text-[#4ADE80]" />
-                <span>Sawirka Jaldiga (Cover Image)</span>
+          <div className="space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+              <div className="relative">
+                <label className="block border border-dashed border-[#D6CEBE] dark:border-[#383531] rounded-xl p-4 pr-9 bg-[#F8F6F1]/70 dark:bg-[#141312] hover:bg-[#EFECE5]/60 dark:hover:bg-[#242320] transition-colors cursor-pointer">
+                  <div className="flex items-center gap-2.5 text-xs font-medium text-[#1C1917] dark:text-[#F5F2EB] mb-1">
+                    <ImageIcon className="w-4 h-4 text-[#14532D] dark:text-[#4ADE80]" />
+                    <span>Sawirka Jaldiga (Cover Image)</span>
+                  </div>
+                  <p className="text-xs text-[#78716C] dark:text-[#A8A29E] truncate">
+                    {coverFile ? coverFile.name : 'Dooro PNG / JPG (Storage: covers/)'}
+                  </p>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0] || null;
+                      e.target.value = '';
+                      setCoverFile(file);
+                    }}
+                    className="sr-only"
+                  />
+                </label>
+                {coverFile && !submitting && (
+                  <button
+                    type="button"
+                    onClick={() => setCoverFile(null)}
+                    aria-label="Ka saar sawirka jaldiga"
+                    title="Ka saar sawirka"
+                    className="absolute top-2.5 right-2.5 p-1 rounded-md text-[#78716C] hover:text-[#1C1917] dark:text-[#A8A29E] dark:hover:text-[#F5F2EB] hover:bg-[#EFECE5] dark:hover:bg-[#292724]"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
-              <p className="text-xs text-[#78716C] dark:text-[#A8A29E] truncate">
-                {coverFile ? coverFile.name : 'Dooro PNG / JPG (Storage: covers/)'}
-              </p>
-              <input
-                type="file"
-                accept="image/*"
-                onChange={(e) => setCoverFile(e.target.files?.[0] || null)}
-                className="sr-only"
-              />
-            </label>
 
-            <label className="block border border-dashed border-[#D6CEBE] dark:border-[#383531] rounded-xl p-4 bg-[#F8F6F1]/70 dark:bg-[#141312] hover:bg-[#EFECE5]/60 dark:hover:bg-[#242320] transition-colors cursor-pointer">
-              <div className="flex items-center gap-2.5 text-xs font-medium text-[#1C1917] dark:text-[#F5F2EB] mb-1">
-                <FileText className="w-4 h-4 text-[#14532D] dark:text-[#4ADE80]" />
-                <span>Faylka Buugga (PDF / EPUB / TXT)</span>
+              <div className="relative">
+                <label className="block border border-dashed border-[#D6CEBE] dark:border-[#383531] rounded-xl p-4 pr-9 bg-[#F8F6F1]/70 dark:bg-[#141312] hover:bg-[#EFECE5]/60 dark:hover:bg-[#242320] transition-colors cursor-pointer">
+                  <div className="flex items-center gap-2.5 text-xs font-medium text-[#1C1917] dark:text-[#F5F2EB] mb-1">
+                    <FileText className="w-4 h-4 text-[#14532D] dark:text-[#4ADE80]" />
+                    <span>Faylka Buugga (PDF / EPUB / TXT)</span>
+                  </div>
+                  <p className="text-xs text-[#78716C] dark:text-[#A8A29E] truncate">
+                    {bookFile ? bookFile.name : 'Dooro PDF, EPUB ama TXT (Storage: books/)'}
+                  </p>
+                  <input
+                    type="file"
+                    accept=".pdf,.epub,.txt,.md,application/pdf,text/plain"
+                    onChange={handleBookFileChange}
+                    className="sr-only"
+                  />
+                </label>
+                {bookFile && !submitting && (
+                  <button
+                    type="button"
+                    onClick={() => setBookFile(null)}
+                    aria-label="Ka saar faylka buugga"
+                    title="Ka saar faylka"
+                    className="absolute top-2.5 right-2.5 p-1 rounded-md text-[#78716C] hover:text-[#1C1917] dark:text-[#A8A29E] dark:hover:text-[#F5F2EB] hover:bg-[#EFECE5] dark:hover:bg-[#292724]"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
-              <p className="text-xs text-[#78716C] dark:text-[#A8A29E] truncate">
-                {bookFile ? bookFile.name : 'Dooro PDF, EPUB ama TXT (Storage: books/)'}
-              </p>
-              <input
-                type="file"
-                accept=".pdf,.epub,.txt,.md,application/pdf,text/plain"
-                onChange={handleBookFileChange}
-                className="sr-only"
-              />
-            </label>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <button
+                type="button"
+                onClick={() => setShowExternalUrls((v) => !v)}
+                className="inline-flex items-center gap-1.5 text-xs font-medium text-[#14532D] dark:text-[#4ADE80] hover:underline"
+              >
+                <Link2 className="w-3.5 h-3.5" />
+                <span>
+                  {showExternalUrls
+                    ? 'Qari link-yada tooska ah (HTTPS)'
+                    : 'Ama geli Link toos ah (haddii Storage xiran yahay)'}
+                </span>
+              </button>
+            </div>
+
+            {showExternalUrls && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-4 rounded-xl bg-[#F8F6F1]/70 dark:bg-[#141312] border border-[#E5E0D5] dark:border-[#2E2C29]">
+                <div>
+                  <label
+                    htmlFor="book-cover-url"
+                    className="block text-xs font-medium text-[#44403C] dark:text-[#D6D3CD] mb-1"
+                  >
+                    Link-ga Sawirka Jaldiga (HTTPS)
+                  </label>
+                  <input
+                    id="book-cover-url"
+                    type="url"
+                    maxLength={BLUEPRINT_LIMITS.book.urlMax}
+                    value={coverFallbackUrl}
+                    onChange={(e) => setCoverFallbackUrl(e.target.value)}
+                    placeholder="https://.../cover.jpg"
+                    className="w-full px-3 py-2 bg-white dark:bg-[#1C1B19] border border-[#D6CEBE] dark:border-[#383531] rounded-lg text-xs text-[#1C1917] dark:text-[#F5F2EB] focus:outline-none focus:ring-2 focus:ring-[#14532D]/30 focus:border-[#14532D]"
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="book-file-url"
+                    className="block text-xs font-medium text-[#44403C] dark:text-[#D6D3CD] mb-1"
+                  >
+                    Link-ga Faylka Buugga (PDF/EPUB HTTPS)
+                  </label>
+                  <input
+                    id="book-file-url"
+                    type="url"
+                    maxLength={BLUEPRINT_LIMITS.book.urlMax}
+                    value={fileFallbackUrl}
+                    onChange={(e) => setFileFallbackUrl(e.target.value)}
+                    placeholder="https://.../buug.pdf"
+                    className="w-full px-3 py-2 bg-white dark:bg-[#1C1B19] border border-[#D6CEBE] dark:border-[#383531] rounded-lg text-xs text-[#1C1917] dark:text-[#F5F2EB] focus:outline-none focus:ring-2 focus:ring-[#14532D]/30 focus:border-[#14532D]"
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
           <div>
@@ -333,8 +429,16 @@ export function AdminUploadPanel({
               disabled={submitting}
               className="inline-flex items-center gap-2 px-6 py-3 bg-[#14532D] dark:bg-[#15803D] text-white rounded-lg text-sm font-medium hover:bg-[#0F3F22] dark:hover:bg-[#166534] transition-colors disabled:opacity-50 whitespace-nowrap"
             >
-              <Upload className="w-4 h-4" />
-              {submitting ? 'Waa la soo gelinayaa...' : 'Kaydi oo Daabac Buugga'}
+              {submitting ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Upload className="w-4 h-4" />
+              )}
+              <span>
+                {submitting
+                  ? uploadStatus || 'Waa la soo gelinayaa...'
+                  : 'Kaydi oo Daabac Buugga'}
+              </span>
             </button>
           </div>
         </form>
@@ -346,7 +450,7 @@ export function AdminUploadPanel({
           </p>
           <div className="bg-white dark:bg-[#1C1B19] border border-[#E5E0D5] dark:border-[#2E2C29] rounded-xl overflow-hidden">
             <BookCover
-              src={coverPreviewUrl}
+              src={coverPreviewUrl || coverFallbackUrl.trim()}
               title={title || 'Cinwaanka Buugga Cusub'}
               author={author || 'Magaca Qoraaga'}
               category={activeCategory}

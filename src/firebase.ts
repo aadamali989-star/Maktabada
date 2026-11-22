@@ -17,6 +17,8 @@ export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const storage = getStorage(app);
+storage.maxUploadRetryTime = 10000;
+storage.maxOperationRetryTime = 10000;
 
 let rtdbInstance: Database | null = null;
 try {

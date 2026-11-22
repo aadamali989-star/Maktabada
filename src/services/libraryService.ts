@@ -24,7 +24,11 @@ import {
   updateDoc,
   where,
 } from 'firebase/firestore';
-import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage';
+import {
+  getDownloadURL,
+  ref as storageRef,
+  uploadBytesResumable,
+} from 'firebase/storage';
 import {
   onDisconnect,
   onValue,
@@ -62,6 +66,172 @@ function sanitizeString(value: string, maxLength: number): string {
 
 function sanitizeFileName(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120);
+}
+
+const MAX_COVER_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_BOOK_FILE_BYTES = 50 * 1024 * 1024;
+const STORAGE_STALL_TIMEOUT_MS = 12000;
+const FIRESTORE_WRITE_TIMEOUT_MS = 15000;
+
+function assertBrowserOnline(): void {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    throw new Error(
+      'Internet ma jiro. Fadlan hubi khadkaaga ka hor intaadan buug soo gelin.'
+    );
+  }
+}
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  timeoutMessage: string
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
+}
+
+function validateOptionalHttpUrl(rawUrl: string | undefined, label: string): string {
+  const trimmed = (rawUrl || '').trim();
+  if (!trimmed) return '';
+  if (!trimmed.startsWith('https://') && !trimmed.startsWith('http://')) {
+    throw new Error(`${label} waa inuu ku bilaabmaa https:// ama http://`);
+  }
+  if (trimmed.length > BLUEPRINT_LIMITS.book.urlMax) {
+    throw new Error(`${label} wuu ka dheer yahay xadka (${BLUEPRINT_LIMITS.book.urlMax} xaraf).`);
+  }
+  return trimmed;
+}
+
+function formatStorageUploadError(err: unknown, itemLabel: string): Error {
+  const code =
+    typeof err === 'object' && err !== null && 'code' in err
+      ? String((err as { code?: unknown }).code || '')
+      : '';
+  const rawMessage = err instanceof Error ? err.message : String(err || '');
+
+  if (
+    code === 'storage/unauthorized' ||
+    code === 'storage/unauthenticated' ||
+    rawMessage.includes('storage/unauthorized')
+  ) {
+    return new Error(
+      `Firebase Storage waa la diiday markii la soo gelinayay ${itemLabel} (storage/unauthorized). Hubi Firebase Console -> Storage -> Rules, ama geli link HTTPS toos ah.`
+    );
+  }
+
+  if (
+    code === 'storage/canceled' ||
+    code === 'storage/retry-limit-exceeded' ||
+    code === 'storage/unknown' ||
+    rawMessage.includes('STORAGE_TIMEOUT') ||
+    rawMessage.includes('ERR_FAILED')
+  ) {
+    return new Error(
+      `Firebase Storage wuu daahay ama lama daarin markii la soo gelinayay ${itemLabel}. Hubi Firebase Console -> Storage (Rules/CORS), ama isticmaal Link HTTPS toos ah / qoraalka buugga.`
+    );
+  }
+
+  return new Error(`Soo gelinta ${itemLabel} way fashilantay: ${rawMessage || 'Cilad aan la garan'}`);
+}
+
+async function uploadFileWithProgress(
+  path: string,
+  file: Blob | File,
+  options?: {
+    contentType?: string;
+    stallTimeoutMs?: number;
+    onProgress?: (percent: number) => void;
+    itemLabel?: string;
+  }
+): Promise<string> {
+  assertBrowserOnline();
+  const targetRef = storageRef(storage, path);
+  const stallTimeoutMs = options?.stallTimeoutMs ?? STORAGE_STALL_TIMEOUT_MS;
+  const itemLabel = options?.itemLabel ?? 'faylka';
+
+  return new Promise<string>((resolve, reject) => {
+    let settled = false;
+    let lastBytesTransferred = -1;
+    let stallTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const uploadTask = uploadBytesResumable(
+      targetRef,
+      file,
+      options?.contentType ? { contentType: options.contentType } : undefined
+    );
+
+    const clearStallTimer = () => {
+      if (stallTimer !== null) {
+        clearTimeout(stallTimer);
+        stallTimer = null;
+      }
+    };
+
+    const resetStallTimer = () => {
+      clearStallTimer();
+      stallTimer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        try {
+          uploadTask.cancel();
+        } catch {
+          // Ignore cancel error
+        }
+        reject(formatStorageUploadError(new Error('STORAGE_TIMEOUT'), itemLabel));
+      }, stallTimeoutMs);
+    };
+
+    resetStallTimer();
+
+    uploadTask.on(
+      'state_changed',
+      (snapshot) => {
+        if (settled) return;
+        if (snapshot.bytesTransferred > lastBytesTransferred) {
+          lastBytesTransferred = snapshot.bytesTransferred;
+          resetStallTimer();
+        }
+        if (snapshot.totalBytes > 0) {
+          const pct = Math.min(
+            100,
+            Math.max(0, Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100))
+          );
+          options?.onProgress?.(pct);
+        }
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        clearStallTimer();
+        reject(formatStorageUploadError(error, itemLabel));
+      },
+      async () => {
+        if (settled) return;
+        clearStallTimer();
+        try {
+          const url = await withTimeout(
+            getDownloadURL(uploadTask.snapshot.ref),
+            10000,
+            `Soo qaadista link-ga ${itemLabel} way daahday.`
+          );
+          settled = true;
+          resolve(url);
+        } catch (err) {
+          settled = true;
+          reject(formatStorageUploadError(err, itemLabel));
+        }
+      }
+    );
+  });
 }
 
 export function extractErrorMessage(
@@ -394,14 +564,12 @@ export async function uploadUserAvatar(uid: string, file: File): Promise<string>
     const safeName = sanitizeFileName(file.name.replace(/\.[^.]+$/, '') || 'avatar');
     const ext = compressedBlob.type === 'image/webp' ? 'webp' : 'jpg';
     const avatarPath = `avatars/${uid}/${Date.now()}_${safeName}.${ext}`;
-    const avatarStorageRef = storageRef(storage, avatarPath);
-    await uploadBytes(avatarStorageRef, compressedBlob, {
+    const uploadedUrl = await uploadFileWithProgress(avatarPath, compressedBlob, {
       contentType: compressedBlob.type || 'image/jpeg',
+      stallTimeoutMs: 8000,
+      itemLabel: 'sawirka profile-ka',
     });
-    finalAvatarUrl = sanitizeString(
-      await getDownloadURL(avatarStorageRef),
-      BLUEPRINT_LIMITS.user.avatarUrlMax
-    );
+    finalAvatarUrl = sanitizeString(uploadedUrl, BLUEPRINT_LIMITS.user.avatarUrlMax);
   } catch {
     // Graceful fallback when Firebase Storage rules are not yet enabled in Console
     finalAvatarUrl = await createCompactAvatarDataUrl(
@@ -692,10 +860,14 @@ export interface CreateBookInput {
   coverFile: File | null;
   bookFile: File | null;
   coverFallbackUrl?: string;
+  fileFallbackUrl?: string;
   adminUid: string;
+  onProgress?: (statusLabel: string) => void;
 }
 
 export async function createBookRecord(input: CreateBookInput): Promise<string> {
+  assertBrowserOnline();
+
   const cleanTitle = sanitizeString(input.title, BLUEPRINT_LIMITS.book.titleMax);
   const cleanAuthor = sanitizeString(input.author, BLUEPRINT_LIMITS.book.authorMax);
   const cleanCategory = sanitizeString(input.category, BLUEPRINT_LIMITS.book.categoryMax);
@@ -708,48 +880,90 @@ export async function createBookRecord(input: CreateBookInput): Promise<string> 
     throw new Error('Cinwaanka, qoraaga, iyo qaybta buugga waa lama huraan.');
   }
 
-  const stamp = Date.now();
-  let coverUrl = sanitizeString(input.coverFallbackUrl || '', BLUEPRINT_LIMITS.book.urlMax);
+  let coverUrl = validateOptionalHttpUrl(input.coverFallbackUrl, 'Link-ga sawirka jaldiga');
+  let fileUrl = validateOptionalHttpUrl(input.fileFallbackUrl, 'Link-ga faylka buugga');
 
   if (input.coverFile) {
     if (!input.coverFile.type.startsWith('image/')) {
       throw new Error('Sawirka jaldiga waa inuu noqdaa PNG, JPG, ama WebP.');
     }
-    if (input.coverFile.size > 10 * 1024 * 1024) {
+    if (input.coverFile.size > MAX_COVER_FILE_BYTES) {
       throw new Error('Sawirka jaldigu waa inuu ka yaraadaa 10 MB.');
     }
-    const safeCoverName = sanitizeFileName(input.coverFile.name);
-    const coverPath = `covers/${stamp}_${safeCoverName}`;
-    const coverStorageRef = storageRef(storage, coverPath);
-    await uploadBytes(coverStorageRef, input.coverFile);
-    coverUrl = sanitizeString(await getDownloadURL(coverStorageRef), BLUEPRINT_LIMITS.book.urlMax);
   }
 
-  let fileUrl = '';
+  if (input.bookFile && input.bookFile.size > MAX_BOOK_FILE_BYTES) {
+    throw new Error('Faylka buuggu waa inuu ka yaraadaa 50 MB.');
+  }
+
+  const stamp = Date.now();
+
+  if (input.coverFile) {
+    input.onProgress?.('Soo gelinaya jaldiga (0%)...');
+    const safeCoverName = sanitizeFileName(input.coverFile.name);
+    const coverPath = `covers/${stamp}_${safeCoverName}`;
+    const uploadedCover = await uploadFileWithProgress(coverPath, input.coverFile, {
+      contentType: input.coverFile.type || undefined,
+      itemLabel: 'sawirka jaldiga',
+      onProgress: (pct) => {
+        input.onProgress?.(`Soo gelinaya jaldiga (${pct}%)...`);
+      },
+    });
+    coverUrl = sanitizeString(uploadedCover, BLUEPRINT_LIMITS.book.urlMax);
+  }
+
   let fileName = '';
   let extractedText = input.contentText;
+  const isTextBookFile = Boolean(
+    input.bookFile &&
+      (input.bookFile.type.startsWith('text/') || /\.(txt|md|csv)$/i.test(input.bookFile.name))
+  );
 
   if (input.bookFile) {
-    const safeBookName = sanitizeFileName(input.bookFile.name);
     fileName = sanitizeString(input.bookFile.name, BLUEPRINT_LIMITS.book.fileNameMax);
-    const bookPath = `books/${stamp}_${safeBookName}`;
-    const bookStorageRef = storageRef(storage, bookPath);
-    await uploadBytes(bookStorageRef, input.bookFile);
-    fileUrl = sanitizeString(await getDownloadURL(bookStorageRef), BLUEPRINT_LIMITS.book.urlMax);
-
-    if (
-      !extractedText.trim() &&
-      (input.bookFile.type.startsWith('text/') ||
-        /\.(txt|md|csv)$/i.test(input.bookFile.name))
-    ) {
-      extractedText = await input.bookFile.text();
+    if (!extractedText.trim() && isTextBookFile) {
+      try {
+        extractedText = await input.bookFile.text();
+      } catch {
+        // Ignore read error
+      }
     }
+
+    input.onProgress?.('Soo gelinaya faylka buugga (0%)...');
+    const safeBookName = sanitizeFileName(input.bookFile.name);
+    const bookPath = `books/${stamp}_${safeBookName}`;
+    try {
+      const uploadedBookUrl = await uploadFileWithProgress(bookPath, input.bookFile, {
+        contentType: input.bookFile.type || undefined,
+        itemLabel: 'faylka buugga',
+        onProgress: (pct) => {
+          input.onProgress?.(`Soo gelinaya faylka buugga (${pct}%)...`);
+        },
+      });
+      fileUrl = sanitizeString(uploadedBookUrl, BLUEPRINT_LIMITS.book.urlMax);
+    } catch (err) {
+      // For TXT/MD files whose content was extracted locally, allow publishing via Firestore contentText
+      if (isTextBookFile && extractedText.trim()) {
+        fileUrl = '';
+      } else {
+        throw err;
+      }
+    }
+  } else if (fileUrl) {
+    const cleanUrlPart = fileUrl.split('?')[0].split('/').pop() || '';
+    fileName = sanitizeString(
+      decodeURIComponent(cleanUrlPart) ||
+        `${input.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'buug'}.${input.fileType}`,
+      BLUEPRINT_LIMITS.book.fileNameMax
+    );
   } else {
     fileName = sanitizeString(
       `${input.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'buug'}.txt`,
       BLUEPRINT_LIMITS.book.fileNameMax
     );
   }
+
+  input.onProgress?.('Kaydinaya buugga...');
 
   const payload = {
     title: cleanTitle,
@@ -771,9 +985,16 @@ export async function createBookRecord(input: CreateBookInput): Promise<string> 
   };
 
   try {
-    const docRef = await addDoc(collection(db, 'books'), payload);
+    const docRef = await withTimeout(
+      addDoc(collection(db, 'books'), payload),
+      FIRESTORE_WRITE_TIMEOUT_MS,
+      'Kaydinta Firestore way daahday. Hubi internet-kaaga ama xisaabta Admin-ka.'
+    );
     return docRef.id;
   } catch (error) {
+    if (error instanceof Error && error.message.includes('Kaydinta Firestore way daahday')) {
+      throw error;
+    }
     handleFirestoreError(error, OperationType.CREATE, 'books');
   }
 }
@@ -792,12 +1013,15 @@ export interface UpdateBookInput {
   existingFileName: string;
   coverFile?: File | null;
   bookFile?: File | null;
+  onProgress?: (statusLabel: string) => void;
 }
 
 export async function updateBookRecord(
   bookId: string,
   input: UpdateBookInput
 ): Promise<void> {
+  assertBrowserOnline();
+
   if (!BLUEPRINT_LIMITS.idPattern.test(bookId)) {
     throw new Error('Aqoonsiga buugga ma saxna.');
   }
@@ -814,54 +1038,98 @@ export async function updateBookRecord(
     throw new Error('Cinwaanka, qoraaga, iyo qaybta buugga waa lama huraan.');
   }
 
+  if (input.coverFile) {
+    if (!input.coverFile.type.startsWith('image/')) {
+      throw new Error('Sawirka jaldiga waa inuu noqdaa PNG, JPG, ama WebP.');
+    }
+    if (input.coverFile.size > MAX_COVER_FILE_BYTES) {
+      throw new Error('Sawirka jaldigu waa inuu ka yaraadaa 10 MB.');
+    }
+  }
+
+  if (input.bookFile && input.bookFile.size > MAX_BOOK_FILE_BYTES) {
+    throw new Error('Faylka buuggu waa inuu ka yaraadaa 50 MB.');
+  }
+
   const stamp = Date.now();
   let coverUrl = sanitizeString(input.existingCoverUrl || '', BLUEPRINT_LIMITS.book.urlMax);
   if (input.coverFile) {
+    input.onProgress?.('Soo gelinaya jaldiga (0%)...');
     const safeCoverName = sanitizeFileName(input.coverFile.name);
     const coverPath = `covers/${stamp}_${safeCoverName}`;
-    const coverStorageRef = storageRef(storage, coverPath);
-    await uploadBytes(coverStorageRef, input.coverFile);
-    coverUrl = sanitizeString(await getDownloadURL(coverStorageRef), BLUEPRINT_LIMITS.book.urlMax);
+    const uploadedCover = await uploadFileWithProgress(coverPath, input.coverFile, {
+      contentType: input.coverFile.type || undefined,
+      itemLabel: 'sawirka jaldiga',
+      onProgress: (pct) => {
+        input.onProgress?.(`Soo gelinaya jaldiga (${pct}%)...`);
+      },
+    });
+    coverUrl = sanitizeString(uploadedCover, BLUEPRINT_LIMITS.book.urlMax);
   }
 
   let fileUrl = sanitizeString(input.existingFileUrl || '', BLUEPRINT_LIMITS.book.urlMax);
   let fileName = sanitizeString(input.existingFileName || '', BLUEPRINT_LIMITS.book.fileNameMax);
   let contentText = input.contentText;
+  const isTextBookFile = Boolean(
+    input.bookFile &&
+      (input.bookFile.type.startsWith('text/') || /\.(txt|md|csv)$/i.test(input.bookFile.name))
+  );
 
   if (input.bookFile) {
-    const safeBookName = sanitizeFileName(input.bookFile.name);
     fileName = sanitizeString(input.bookFile.name, BLUEPRINT_LIMITS.book.fileNameMax);
-    const bookPath = `books/${stamp}_${safeBookName}`;
-    const bookStorageRef = storageRef(storage, bookPath);
-    await uploadBytes(bookStorageRef, input.bookFile);
-    fileUrl = sanitizeString(await getDownloadURL(bookStorageRef), BLUEPRINT_LIMITS.book.urlMax);
+    if (!contentText.trim() && isTextBookFile) {
+      try {
+        contentText = await input.bookFile.text();
+      } catch {
+        // Ignore read error
+      }
+    }
 
-    if (
-      !contentText.trim() &&
-      (input.bookFile.type.startsWith('text/') ||
-        /\.(txt|md|csv)$/i.test(input.bookFile.name))
-    ) {
-      contentText = await input.bookFile.text();
+    input.onProgress?.('Soo gelinaya faylka buugga (0%)...');
+    const safeBookName = sanitizeFileName(input.bookFile.name);
+    const bookPath = `books/${stamp}_${safeBookName}`;
+    try {
+      const uploadedBookUrl = await uploadFileWithProgress(bookPath, input.bookFile, {
+        contentType: input.bookFile.type || undefined,
+        itemLabel: 'faylka buugga',
+        onProgress: (pct) => {
+          input.onProgress?.(`Soo gelinaya faylka buugga (${pct}%)...`);
+        },
+      });
+      fileUrl = sanitizeString(uploadedBookUrl, BLUEPRINT_LIMITS.book.urlMax);
+    } catch (err) {
+      if (!(isTextBookFile && contentText.trim())) {
+        throw err;
+      }
     }
   }
 
+  input.onProgress?.('Kaydinaya isbeddelka...');
+
   const bookPath = `books/${bookId}`;
   try {
-    await updateDoc(doc(db, 'books', bookId), {
-      title: cleanTitle,
-      author: cleanAuthor,
-      category: cleanCategory,
-      description: sanitizeString(input.description, BLUEPRINT_LIMITS.book.descriptionMax),
-      coverUrl,
-      fileUrl,
-      fileName,
-      fileType: input.fileType,
-      allowDownload: Boolean(input.allowDownload),
-      published: Boolean(input.published),
-      contentText: sanitizeString(contentText, BLUEPRINT_LIMITS.book.contentTextMax),
-      updatedAt: serverTimestamp(),
-    });
+    await withTimeout(
+      updateDoc(doc(db, 'books', bookId), {
+        title: cleanTitle,
+        author: cleanAuthor,
+        category: cleanCategory,
+        description: sanitizeString(input.description, BLUEPRINT_LIMITS.book.descriptionMax),
+        coverUrl,
+        fileUrl,
+        fileName,
+        fileType: input.fileType,
+        allowDownload: Boolean(input.allowDownload),
+        published: Boolean(input.published),
+        contentText: sanitizeString(contentText, BLUEPRINT_LIMITS.book.contentTextMax),
+        updatedAt: serverTimestamp(),
+      }),
+      FIRESTORE_WRITE_TIMEOUT_MS,
+      'Kaydinta Firestore way daahday. Hubi internet-kaaga ama xisaabta Admin-ka.'
+    );
   } catch (error) {
+    if (error instanceof Error && error.message.includes('Kaydinta Firestore way daahday')) {
+      throw error;
+    }
     handleFirestoreError(error, OperationType.UPDATE, bookPath);
   }
 }
