@@ -1,5 +1,6 @@
 import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
 import { Upload, CheckCircle2, Image as ImageIcon, FileText, X, FolderGit2, Loader2 } from 'lucide-react';
+import { fetchGitHubHostStatus, type GitHubUploadStatus } from '../services/githubHostService';
 import { createBookRecord, extractErrorMessage } from '../services/libraryService';
 import { BLUEPRINT_LIMITS, type BookFileType } from '../types';
 import { BookCover } from './BookCover';
@@ -44,6 +45,17 @@ export function AdminUploadPanel({
   const [uploadStatus, setUploadStatus] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
+  const [ghStatus, setGhStatus] = useState<GitHubUploadStatus | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    fetchGitHubHostStatus().then((status) => {
+      if (active) setGhStatus(status);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!coverFile) {
@@ -64,6 +76,7 @@ export function AdminUploadPanel({
     e.target.value = '';
     setBookFile(file);
     if (!file) return;
+    setFileFallbackUrl('');
 
     const lower = file.name.toLowerCase();
     if (lower.endsWith('.pdf')) setFileType('pdf');
@@ -278,72 +291,8 @@ export function AdminUploadPanel({
             />
           </div>
 
-          {/* File Uploads */}
-          <div className="space-y-3">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-              <div className="relative">
-                <label className="block border border-dashed border-[#D6CEBE] dark:border-[#383531] rounded-xl p-4 pr-9 bg-[#F8F6F1]/70 dark:bg-[#141312] hover:bg-[#EFECE5]/60 dark:hover:bg-[#242320] transition-colors cursor-pointer">
-                  <div className="flex items-center gap-2.5 text-xs font-medium text-[#1C1917] dark:text-[#F5F2EB] mb-1">
-                    <ImageIcon className="w-4 h-4 text-[#14532D] dark:text-[#4ADE80]" />
-                    <span>Sawirka Jaldiga (Cover Image)</span>
-                  </div>
-                  <p className="text-xs text-[#78716C] dark:text-[#A8A29E] truncate">
-                    {coverFile ? coverFile.name : 'Dooro PNG / JPG (Storage: covers/)'}
-                  </p>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0] || null;
-                      e.target.value = '';
-                      setCoverFile(file);
-                    }}
-                    className="sr-only"
-                  />
-                </label>
-                {coverFile && !submitting && (
-                  <button
-                    type="button"
-                    onClick={() => setCoverFile(null)}
-                    aria-label="Ka saar sawirka jaldiga"
-                    title="Ka saar sawirka"
-                    className="absolute top-2.5 right-2.5 p-1 rounded-md text-[#78716C] hover:text-[#1C1917] dark:text-[#A8A29E] dark:hover:text-[#F5F2EB] hover:bg-[#EFECE5] dark:hover:bg-[#292724]"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                )}
-              </div>
-
-              <div className="relative">
-                <label className="block border border-dashed border-[#D6CEBE] dark:border-[#383531] rounded-xl p-4 pr-9 bg-[#F8F6F1]/70 dark:bg-[#141312] hover:bg-[#EFECE5]/60 dark:hover:bg-[#242320] transition-colors cursor-pointer">
-                  <div className="flex items-center gap-2.5 text-xs font-medium text-[#1C1917] dark:text-[#F5F2EB] mb-1">
-                    <FileText className="w-4 h-4 text-[#14532D] dark:text-[#4ADE80]" />
-                    <span>Faylka Buugga (PDF / EPUB / TXT)</span>
-                  </div>
-                  <p className="text-xs text-[#78716C] dark:text-[#A8A29E] truncate">
-                    {bookFile ? bookFile.name : 'Dooro PDF, EPUB ama TXT (Storage: books/)'}
-                  </p>
-                  <input
-                    type="file"
-                    accept=".pdf,.epub,.txt,.md,application/pdf,text/plain"
-                    onChange={handleBookFileChange}
-                    className="sr-only"
-                  />
-                </label>
-                {bookFile && !submitting && (
-                  <button
-                    type="button"
-                    onClick={() => setBookFile(null)}
-                    aria-label="Ka saar faylka buugga"
-                    title="Ka saar faylka"
-                    className="absolute top-2.5 right-2.5 p-1 rounded-md text-[#78716C] hover:text-[#1C1917] dark:text-[#A8A29E] dark:hover:text-[#F5F2EB] hover:bg-[#EFECE5] dark:hover:bg-[#292724]"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                )}
-              </div>
-            </div>
-
+          {/* Free GitHub Host & Local File Uploads */}
+          <div className="space-y-4">
             <div className="flex items-center justify-between">
               <button
                 type="button"
@@ -354,7 +303,7 @@ export function AdminUploadPanel({
                 <span>
                   {showExternalUrls
                     ? 'Qari GitHub Free Host / Link-yada Tooska ah'
-                    : 'Isticmaal GitHub Free Host (0$) ama Link Toos ah'}
+                    : 'Fur GitHub Free Host (0$) ama Link Toos ah'}
                 </span>
               </button>
             </div>
@@ -380,6 +329,86 @@ export function AdminUploadPanel({
                   }
                 }}
               />
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+              <div className="relative">
+                <label className="block border border-dashed border-[#D6CEBE] dark:border-[#383531] rounded-xl p-4 pr-9 bg-[#F8F6F1]/70 dark:bg-[#141312] hover:bg-[#EFECE5]/60 dark:hover:bg-[#242320] transition-colors cursor-pointer">
+                  <div className="flex items-center gap-2.5 text-xs font-medium text-[#1C1917] dark:text-[#F5F2EB] mb-1">
+                    <ImageIcon className="w-4 h-4 text-[#14532D] dark:text-[#4ADE80]" />
+                    <span>Sawirka Jaldiga (Device)</span>
+                  </div>
+                  <p className="text-xs text-[#78716C] dark:text-[#A8A29E] truncate">
+                    {coverFile ? coverFile.name : 'Dooro PNG / JPG (toos ayuu u kaydsamayaa)'}
+                  </p>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0] || null;
+                      e.target.value = '';
+                      setCoverFile(file);
+                      if (file) setCoverFallbackUrl('');
+                    }}
+                    className="sr-only"
+                  />
+                </label>
+                {coverFile && !submitting && (
+                  <button
+                    type="button"
+                    onClick={() => setCoverFile(null)}
+                    aria-label="Ka saar sawirka jaldiga"
+                    title="Ka saar sawirka"
+                    className="absolute top-2.5 right-2.5 p-1 rounded-md text-[#78716C] hover:text-[#1C1917] dark:text-[#A8A29E] dark:hover:text-[#F5F2EB] hover:bg-[#EFECE5] dark:hover:bg-[#292724]"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+
+              <div className="relative">
+                <label className="block border border-dashed border-[#D6CEBE] dark:border-[#383531] rounded-xl p-4 pr-9 bg-[#F8F6F1]/70 dark:bg-[#141312] hover:bg-[#EFECE5]/60 dark:hover:bg-[#242320] transition-colors cursor-pointer">
+                  <div className="flex items-center gap-2.5 text-xs font-medium text-[#1C1917] dark:text-[#F5F2EB] mb-1">
+                    <FileText className="w-4 h-4 text-[#14532D] dark:text-[#4ADE80]" />
+                    <span>
+                      {ghStatus?.configured
+                        ? 'Faylka Buugga (GitHub Upload)'
+                        : 'Faylka Buugga (TXT / GitHub)'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-[#78716C] dark:text-[#A8A29E] truncate">
+                    {bookFile
+                      ? bookFile.name
+                      : ghStatus?.configured
+                      ? 'Dooro PDF, EPUB ama TXT (toos GitHub ayuu u galayaa)'
+                      : 'TXT toos buu u galayaa · PDF/EPUB ku dar GITHUB_TOKEN ama GitHub'}
+                  </p>
+                  <input
+                    type="file"
+                    accept=".pdf,.epub,.txt,.md,application/pdf,text/plain"
+                    onChange={handleBookFileChange}
+                    className="sr-only"
+                  />
+                </label>
+                {bookFile && !submitting && (
+                  <button
+                    type="button"
+                    onClick={() => setBookFile(null)}
+                    aria-label="Ka saar faylka buugga"
+                    title="Ka saar faylka"
+                    className="absolute top-2.5 right-2.5 p-1 rounded-md text-[#78716C] hover:text-[#1C1917] dark:text-[#A8A29E] dark:hover:text-[#F5F2EB] hover:bg-[#EFECE5] dark:hover:bg-[#292724]"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            </div>
+            {bookFile && !/\.(txt|md|csv)$/i.test(bookFile.name) && (
+              <p className="text-xs text-[#57534E] dark:text-[#A8A29E] leading-relaxed">
+                {ghStatus?.configured
+                  ? `Faylkan si toos ah ayaa loogu shubayaa GitHub (${ghStatus.repo}) markaad gujiso Kaydi. (Fiiro: haddii aad ku jirto Netlify, xadka tooska ah ee function-ku waa ~4.5 MB.)`
+                  : 'Fiiro gaar ah: Si faylasha PDF/EPUB ee Device-ka toos loogu shubo GitHub markaad gujiso Kaydi, ku dar GITHUB_TOKEN qaybta Secrets / Netlify Env Vars — ama ku tuur GitHub repo-ga kadibna ka dooro qaybta sare.'}
+              </p>
             )}
           </div>
 

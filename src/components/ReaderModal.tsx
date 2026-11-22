@@ -687,6 +687,38 @@ export function ReaderModal({
                     </button>
                   )}
                 </div>
+              ) : book.fileType === 'epub' ? (
+                <div className="flex-1 flex flex-col items-center justify-center p-8 text-center max-w-md mx-auto">
+                  <FileText className={`w-9 h-9 mb-3 ${styles.muted}`} />
+                  <h3 className="font-serif text-lg font-semibold mb-2">
+                    Faylka EPUB-ka ({book.fileName || book.title})
+                  </h3>
+                  <p className={`text-sm mb-5 ${styles.muted}`}>
+                    Browser-ku toos uguma furi karo faylasha EPUB gudaha boggan. Waxaad ku akhrisan kartaa Qoraalka Online (haddii uu jiro) ama waad soo dejin kartaa si aad ugu furto EPUB reader-ka telefoonkaaga.
+                  </p>
+                  <div className="flex flex-wrap items-center justify-center gap-3">
+                    {hasText && (
+                      <button
+                        type="button"
+                        onClick={() => setViewMode('text')}
+                        className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-medium bg-[#14532D] text-white rounded-lg hover:bg-[#0F3F22] transition-colors"
+                      >
+                        <BookOpen className="w-3.5 h-3.5" />
+                        Akhri Qoraalka Online
+                      </button>
+                    )}
+                    {book.allowDownload && (
+                      <button
+                        type="button"
+                        onClick={() => triggerBookDownload(book)}
+                        className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-medium border border-current rounded-lg hover:opacity-80 transition-opacity"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        Soo Deji EPUB
+                      </button>
+                    )}
+                  </div>
+                </div>
               ) : (
                 <iframe
                   src={iframeSrc}

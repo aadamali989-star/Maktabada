@@ -7,13 +7,16 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import {
+  fetchGitHubHostStatus,
   fetchPublicGitHubLibraryFiles,
   formatBytesCompact,
   formatTitleFromFileName,
   getSavedGitHubHostRepo,
   normalizeGitHubAssetUrl,
   parseGitHubRepoInput,
+  saveGitHubHostRepo,
   type GitHubRepoScanResult,
+  type GitHubUploadStatus,
 } from '../services/githubHostService';
 import { extractErrorMessage } from '../services/libraryService';
 import { BLUEPRINT_LIMITS, type BookFileType } from '../types';
@@ -45,6 +48,7 @@ export function GitHubHostPicker({
   const [scanResult, setScanResult] = useState<GitHubRepoScanResult | null>(null);
   const [scanError, setScanError] = useState('');
   const [loadingTxt, setLoadingTxt] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState<GitHubUploadStatus | null>(null);
 
   const resolvedRepoUrl = (() => {
     try {
@@ -56,9 +60,17 @@ export function GitHubHostPicker({
   })();
 
   useEffect(() => {
-    const initial = getSavedGitHubHostRepo().trim();
-    if (!initial) return;
     let active = true;
+    fetchGitHubHostStatus().then((status) => {
+      if (active) setUploadStatus(status);
+    });
+
+    const initial = getSavedGitHubHostRepo().trim();
+    if (!initial) {
+      return () => {
+        active = false;
+      };
+    }
     setScanning(true);
     fetchPublicGitHubLibraryFiles(initial)
       .then((result) => {
@@ -169,6 +181,20 @@ export function GitHubHostPicker({
         </a>
       </div>
 
+      {uploadStatus && (
+        <p
+          className={`text-xs leading-relaxed ${
+            uploadStatus.configured
+              ? 'text-[#14532D] dark:text-[#4ADE80]'
+              : 'text-[#57534E] dark:text-[#A8A29E]'
+          }`}
+        >
+          {uploadStatus.configured
+            ? `Isku xirka tooska ah wuu shaqaynayaa (${uploadStatus.repo}): fayl kasta oo aad hoos ka doorato si toos ah ayuu GitHub ugu kaydsamayaa markaad gujiso Kaydi.`
+            : 'Soo gelinta tooska ah ee PDF/EPUB (1-gujis) waxay sugaysaa GITHUB_TOKEN in lagu daro Secrets / Netlify Env Vars. Hadda waad ka soo dooran kartaa faylasha repo-ga ama toos baad u gelin kartaa TXT & sawirro.'}
+        </p>
+      )}
+
       {/* Repo Scanner */}
       <div className="flex flex-col sm:flex-row gap-2">
         <input
@@ -176,6 +202,14 @@ export function GitHubHostPicker({
           disabled={disabled || scanning}
           value={repoInput}
           onChange={(e) => setRepoInput(e.target.value)}
+          onBlur={() => {
+            try {
+              const parsed = parseGitHubRepoInput(repoInput);
+              saveGitHubHostRepo(`${parsed.owner}/${parsed.repo}`);
+            } catch {
+              // Ignore invalid partial input on blur
+            }
+          }}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               e.preventDefault();

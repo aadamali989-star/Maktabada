@@ -292,6 +292,12 @@ export function AdminBookEditModal({
                     const file = e.target.files?.[0] || null;
                     e.target.value = '';
                     setBookFile(file);
+                    if (file) {
+                      const lower = file.name.toLowerCase();
+                      if (lower.endsWith('.pdf')) setFileType('pdf');
+                      else if (lower.endsWith('.epub')) setFileType('epub');
+                      else if (lower.endsWith('.txt') || lower.endsWith('.md')) setFileType('txt');
+                    }
                   }}
                   className="sr-only"
                 />
