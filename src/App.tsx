@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { User } from 'firebase/auth';
 import {
+  Bell,
   BellRing,
   Check,
   Search,
@@ -34,6 +35,7 @@ import {
   subscribeUserReadingProgress,
   toggleBookDownloadable,
   toggleFavoriteBook,
+  updateDailyReminderSettings,
   upgradeStarterBookCovers,
 } from './services/libraryService';
 import {
@@ -60,10 +62,12 @@ import { ReaderModal } from './components/ReaderModal';
 import { AdminPanel } from './components/AdminPanel';
 import { RecentlyRead, type RecentlyReadItem } from './components/RecentlyRead';
 import { ProfileDrawer } from './components/ProfileDrawer';
+import { DailyNotificationModal } from './components/DailyNotificationModal';
 import { UserAvatar } from './components/UserAvatar';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { heroLibrarySanctuaryUrl } from './assets/starterAssets';
 import {
+  getBrowserNotificationPermission,
   getLastReminderSentDate,
   getLocalTimeHHMM,
   getReminderDismissedDate,
@@ -71,7 +75,10 @@ import {
   markReminderSentDate,
   normalizeReminderTime,
   readCachedDailyReminder,
+  requestBrowserNotificationPermission,
   showDailyReadingBrowserNotification,
+  writeCachedDailyReminder,
+  type DailyReminderSettings,
 } from './services/dailyReminderService';
 
 const READER_DARK_MODE_KEY = 'maktabada_reader_dark_mode';
@@ -149,6 +156,7 @@ export default function App() {
   const [coverDisplayMode, setCoverDisplayMode] = useState<'image' | 'styled'>('image');
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [profileDrawerOpen, setProfileDrawerOpen] = useState(false);
+  const [notificationModalOpen, setNotificationModalOpen] = useState(false);
   const openProfileOnAuthRef = useRef(false);
   const [activeBookId, setActiveBookId] = useState<string | null>(null);
   const [readerInitialTab, setReaderInitialTab] = useState<'read' | 'comments'>('read');
@@ -174,6 +182,14 @@ export default function App() {
   const [sessionSecondsByBook, setSessionSecondsByBook] = useState<Record<string, number>>({});
   const [readingLogsMap, setReadingLogsMap] = useState<Record<string, DailyReadingLog>>({});
   const [readingStreakLoading, setReadingStreakLoading] = useState<boolean>(false);
+  const [reminderSettings, setReminderSettings] = useState<DailyReminderSettings>(() =>
+    readCachedDailyReminder(undefined)
+  );
+  const [reminderSaving, setReminderSaving] = useState<boolean>(false);
+  const [reminderErrorMsg, setReminderErrorMsg] = useState<string | null>(null);
+  const [notificationPermission, setNotificationPermission] = useState<
+    NotificationPermission | 'unsupported'
+  >(() => getBrowserNotificationPermission());
   const [dailyReminderBanner, setDailyReminderBanner] = useState<{
     title: string;
     body: string;
@@ -430,34 +446,121 @@ export default function App() {
 
   const readingStreak = useMemo(() => computeReadingStreak(readingLogsMap), [readingLogsMap]);
 
+  const totalSessionSeconds = useMemo(
+    () => Object.values(sessionSecondsByBook).reduce((sum, sec) => sum + (sec || 0), 0),
+    [sessionSecondsByBook]
+  );
+
+  const effectiveTodaySeconds = user
+    ? Math.max(readingStreak.todaySeconds, totalSessionSeconds)
+    : totalSessionSeconds;
+
+  const effectiveGoalMinutes =
+    typeof profile?.dailyReadingGoalMinutes === 'number' &&
+    profile.dailyReadingGoalMinutes >= 5 &&
+    profile.dailyReadingGoalMinutes <= 480
+      ? profile.dailyReadingGoalMinutes
+      : 15;
+
+  // Sync reminder settings from Firestore profile (when logged in) or localStorage cache (guest/offline)
+  useEffect(() => {
+    const cached = readCachedDailyReminder(user?.uid);
+    if (user && profile) {
+      const resolved: DailyReminderSettings = {
+        enabled:
+          typeof profile.dailyReminderEnabled === 'boolean'
+            ? profile.dailyReminderEnabled
+            : cached.enabled,
+        time: normalizeReminderTime(profile.dailyReminderTime || cached.time),
+      };
+      setReminderSettings(resolved);
+      writeCachedDailyReminder(user.uid, resolved);
+    } else {
+      setReminderSettings(cached);
+    }
+    setNotificationPermission(getBrowserNotificationPermission());
+  }, [user, profile?.uid, profile?.dailyReminderEnabled, profile?.dailyReminderTime]);
+
+  const handleRequestReminderPermission = useCallback(async () => {
+    const permission = await requestBrowserNotificationPermission();
+    setNotificationPermission(permission);
+    if (permission === 'granted') {
+      showToast('Ogeysiisyada browser-ka waa la oggolaaday.');
+    } else if (permission === 'denied') {
+      showToast(
+        'Browser-ku wuu diiday ogeysiiska tooska ah; xasuusinta gudaha website-ka ayaad weli heli doontaa.'
+      );
+    }
+  }, [showToast]);
+
+  const saveReminderSettings = useCallback(
+    async (nextEnabled: boolean, nextTime: string) => {
+      const cleanTime = normalizeReminderTime(nextTime);
+      setReminderErrorMsg(null);
+      setReminderSaving(true);
+      try {
+        if (nextEnabled && getBrowserNotificationPermission() === 'default') {
+          const permission = await requestBrowserNotificationPermission();
+          setNotificationPermission(permission);
+        }
+
+        if (user && profile) {
+          const saved = await updateDailyReminderSettings(user.uid, nextEnabled, cleanTime);
+          setReminderSettings(saved);
+          writeCachedDailyReminder(user.uid, saved);
+          showToast(
+            saved.enabled
+              ? `Xasuusinta maalinlaha ah waa la daaray (${saved.time}).`
+              : 'Xasuusinta maalinlaha ah waa la damiyay.'
+          );
+        } else {
+          const saved: DailyReminderSettings = { enabled: nextEnabled, time: cleanTime };
+          setReminderSettings(saved);
+          writeCachedDailyReminder(undefined, saved);
+          showToast(
+            saved.enabled
+              ? `Xasuusinta maalinlaha ah waa la daaray (${saved.time}).`
+              : 'Xasuusinta maalinlaha ah waa la damiyay.'
+          );
+        }
+      } catch (err) {
+        setReminderErrorMsg(
+          err instanceof Error ? err.message : 'Xasuusinta maalinlaha ah lama kaydin karin.'
+        );
+      } finally {
+        setReminderSaving(false);
+      }
+    },
+    [user, profile, showToast]
+  );
+
   const triggerDailyReminder = useCallback(
     async (isTest = false) => {
-      const goalMinutes =
-        typeof profile?.dailyReadingGoalMinutes === 'number' &&
-        profile.dailyReadingGoalMinutes >= 5 &&
-        profile.dailyReadingGoalMinutes <= 480
-          ? profile.dailyReadingGoalMinutes
-          : 15;
-      const todayMinutes = readingStreak.todayMinutes;
-      const remainingMinutes = Math.max(0, goalMinutes - todayMinutes);
+      if (isTest && getBrowserNotificationPermission() === 'default') {
+        const perm = await requestBrowserNotificationPermission();
+        setNotificationPermission(perm);
+      }
+
+      const todayMinutes = Math.floor(effectiveTodaySeconds / 60);
+      const remainingMinutes = Math.max(0, effectiveGoalMinutes - todayMinutes);
 
       const title = isTest
         ? 'Tijaabada Xasuusinta Akhriska · maktabada.so'
         : 'Waqtigii Akhriska Maanta · maktabada.so';
       const body =
         remainingMinutes > 0
-          ? `Waxaa kuu haray ${remainingMinutes} daqiiqo si aad u gaarto hadafkaaga maanta (${goalMinutes} daqiiqo).${
+          ? `Waxaa kuu haray ${remainingMinutes} daqiiqo si aad u gaarto hadafkaaga maanta (${effectiveGoalMinutes} daqiiqo).${
               readingStreak.currentStreak > 0
                 ? ` Ilaali ${readingStreak.currentStreak}-maalmood streak-kaaga!`
                 : ''
             }`
-          : `Hadafkaaga maanta (${goalMinutes} daqiiqo) waad buuxisay! Waad sii akhrisan kartaa bogagga cusub.`;
+          : `Hadafkaaga maanta (${effectiveGoalMinutes} daqiiqo) waad buuxisay! Waad sii akhrisan kartaa bogagga cusub.`;
 
       setDailyReminderBanner({ title, body });
       const nativeShown = await showDailyReadingBrowserNotification({
         title,
         body,
-        tag: isTest ? 'maktabada-reminder-test' : 'maktabada-daily-reading-reminder',
+        tag: isTest ? `maktabada-reminder-test-${Date.now()}` : 'maktabada-daily-reading-reminder',
       });
       if (isTest) {
         showToast(
@@ -468,45 +571,31 @@ export default function App() {
       }
     },
     [
-      profile?.dailyReadingGoalMinutes,
-      readingStreak.todayMinutes,
+      effectiveTodaySeconds,
+      effectiveGoalMinutes,
       readingStreak.currentStreak,
       showToast,
     ]
   );
 
   useEffect(() => {
-    if (!authReady || !user || !profile) {
-      setDailyReminderBanner(null);
-      return;
-    }
+    if (!authReady) return;
 
     const checkDailyReminder = () => {
-      const cached = readCachedDailyReminder(user.uid);
-      const enabled =
-        typeof profile.dailyReminderEnabled === 'boolean'
-          ? profile.dailyReminderEnabled
-          : cached.enabled;
-      if (!enabled) {
+      if (!reminderSettings.enabled) {
         setDailyReminderBanner(null);
         return;
       }
 
-      const targetTime = normalizeReminderTime(profile.dailyReminderTime || cached.time);
-      const goalMinutes =
-        typeof profile.dailyReadingGoalMinutes === 'number' &&
-        profile.dailyReadingGoalMinutes >= 5 &&
-        profile.dailyReadingGoalMinutes <= 480
-          ? profile.dailyReadingGoalMinutes
-          : 15;
-      const goalCompleted = readingStreak.todaySeconds >= goalMinutes * 60;
+      const targetTime = normalizeReminderTime(reminderSettings.time);
+      const goalCompleted = effectiveTodaySeconds >= effectiveGoalMinutes * 60;
       if (goalCompleted) {
         setDailyReminderBanner(null);
         return;
       }
 
       const todayKey = getLocalDateKey();
-      const dismissedToday = getReminderDismissedDate(user.uid) === todayKey;
+      const dismissedToday = getReminderDismissedDate(user?.uid) === todayKey;
       if (dismissedToday) {
         return;
       }
@@ -516,15 +605,18 @@ export default function App() {
         return;
       }
 
-      const alreadySentToday = getLastReminderSentDate(user.uid) === todayKey;
+      const alreadySentToday = getLastReminderSentDate(user?.uid) === todayKey;
       if (!alreadySentToday) {
-        markReminderSentDate(user.uid, todayKey);
+        markReminderSentDate(user?.uid, todayKey);
         void triggerDailyReminder(false);
       } else if (!dailyReminderBanner) {
-        const remainingMinutes = Math.max(1, goalMinutes - readingStreak.todayMinutes);
+        const remainingMinutes = Math.max(
+          1,
+          effectiveGoalMinutes - Math.floor(effectiveTodaySeconds / 60)
+        );
         setDailyReminderBanner({
           title: 'Xasuusinta Akhriska Maanta · maktabada.so',
-          body: `Waxaa kuu haray ${remainingMinutes} daqiiqo si aad u gaarto hadafkaaga maanta (${goalMinutes} daqiiqo).`,
+          body: `Waxaa kuu haray ${remainingMinutes} daqiiqo si aad u gaarto hadafkaaga maanta (${effectiveGoalMinutes} daqiiqo).`,
         });
       }
     };
@@ -534,10 +626,11 @@ export default function App() {
     return () => window.clearInterval(interval);
   }, [
     authReady,
-    user,
-    profile,
-    readingStreak.todaySeconds,
-    readingStreak.todayMinutes,
+    user?.uid,
+    reminderSettings.enabled,
+    reminderSettings.time,
+    effectiveTodaySeconds,
+    effectiveGoalMinutes,
     dailyReminderBanner,
     triggerDailyReminder,
   ]);
@@ -876,9 +969,38 @@ export default function App() {
             ))}
           </nav>
 
-          {/* Zone 3: PWA Install, Site-wide Dark Mode toggle, Profile Drawer trigger & auth action */}
+          {/* Zone 3: PWA Install, Daily Notification Bell, Dark Mode toggle, Profile Drawer trigger & auth action */}
           <div className="flex items-center gap-2 shrink-0">
             <PWAInstallButton />
+            <button
+              type="button"
+              onClick={() => {
+                setNotificationPermission(getBrowserNotificationPermission());
+                setNotificationModalOpen(true);
+              }}
+              aria-label="Xasuusinta Maalinlaha ah (Daily Notification)"
+              title="Xasuusinta Maalinlaha ah (Daily Notification)"
+              className={`relative inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
+                reminderSettings.enabled
+                  ? 'bg-[#14532D]/10 dark:bg-[#15803D]/25 border-[#14532D]/30 dark:border-[#22C55E]/40 text-[#14532D] dark:text-[#4ADE80] hover:bg-[#14532D]/15 dark:hover:bg-[#15803D]/35'
+                  : 'bg-white dark:bg-[#1C1B19] border-[#D6CEBE] dark:border-[#383531] text-[#57534E] dark:text-[#D6D3CD] hover:text-[#1C1917] dark:hover:text-[#F5F2EB] hover:bg-[#EFECE5] dark:hover:bg-[#292724]'
+              }`}
+            >
+              {reminderSettings.enabled ? (
+                <BellRing className="w-3.5 h-3.5 shrink-0" />
+              ) : (
+                <Bell className="w-3.5 h-3.5 shrink-0" />
+              )}
+              <span className="hidden min-[440px]:inline">
+                {reminderSettings.enabled ? `Xasuusin · ${reminderSettings.time}` : 'Xasuusin'}
+              </span>
+              {(reminderSettings.enabled || dailyReminderBanner) && (
+                <span
+                  aria-hidden="true"
+                  className="w-2 h-2 rounded-full bg-[#15803D] dark:bg-[#4ADE80]"
+                />
+              )}
+            </button>
             <button
               type="button"
               onClick={() => handleSetReaderDarkMode()}
@@ -1026,9 +1148,7 @@ export default function App() {
                   onClick={() => {
                     const latestBook = recentlyReadItems[0]?.book || filteredBooks[0] || books[0];
                     setDailyReminderBanner(null);
-                    if (user) {
-                      markReminderDismissedDate(user.uid, getLocalDateKey());
-                    }
+                    markReminderDismissedDate(user?.uid, getLocalDateKey());
                     if (latestBook) {
                       openBookReader(latestBook, 'read');
                     }
@@ -1040,9 +1160,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => {
-                    if (user) {
-                      markReminderDismissedDate(user.uid, getLocalDateKey());
-                    }
+                    markReminderDismissedDate(user?.uid, getLocalDateKey());
                     setDailyReminderBanner(null);
                   }}
                   aria-label="Xir xasuusinta maanta"
@@ -1206,11 +1324,39 @@ export default function App() {
                       <span className="font-mono tabular-nums">
                         {favorites.length} Favorites
                       </span>
+                      <span aria-hidden="true">·</span>
+                      <button
+                        type="button"
+                        onClick={() => setNotificationModalOpen(true)}
+                        className="inline-flex items-center gap-1 font-medium text-[#14532D] dark:text-[#4ADE80] hover:underline"
+                      >
+                        <BellRing className="w-3 h-3" />
+                        <span>
+                          {reminderSettings.enabled
+                            ? `Xasuusin: ${reminderSettings.time}`
+                            : 'Daar Xasuusinta Maalinlaha'}
+                        </span>
+                      </button>
                     </>
                   ) : (
-                    <span>
-                      Soo gal akoonkaaga si aad u kaydsato Favorites oo aad u hesho khibrad buuxda.
-                    </span>
+                    <>
+                      <span>
+                        Soo gal akoonkaaga si aad u kaydsato Favorites oo aad u hesho khibrad buuxda.
+                      </span>
+                      <span aria-hidden="true">·</span>
+                      <button
+                        type="button"
+                        onClick={() => setNotificationModalOpen(true)}
+                        className="inline-flex items-center gap-1 font-medium text-[#14532D] dark:text-[#4ADE80] hover:underline"
+                      >
+                        <BellRing className="w-3 h-3" />
+                        <span>
+                          {reminderSettings.enabled
+                            ? `Xasuusinta Maalinlaha: ${reminderSettings.time}`
+                            : 'Deji Xasuusinta Maalinlaha ah'}
+                        </span>
+                      </button>
+                    </>
                   )}
                 </div>
               </div>
@@ -1487,8 +1633,42 @@ export default function App() {
         onTestDailyReminder={() => {
           void triggerDailyReminder(true);
         }}
+        onReminderSettingsChange={(saved) => setReminderSettings(saved)}
         onLogout={handleLogout}
         onNotify={showToast}
+      />
+
+      <DailyNotificationModal
+        open={notificationModalOpen}
+        enabled={reminderSettings.enabled}
+        time={reminderSettings.time}
+        goalMinutes={effectiveGoalMinutes}
+        todaySeconds={effectiveTodaySeconds}
+        currentStreak={readingStreak.currentStreak}
+        isLoggedIn={Boolean(user && profile)}
+        saving={reminderSaving}
+        errorMsg={reminderErrorMsg}
+        permission={notificationPermission}
+        activeBanner={dailyReminderBanner}
+        onClose={() => setNotificationModalOpen(false)}
+        onToggleEnabled={() => saveReminderSettings(!reminderSettings.enabled, reminderSettings.time)}
+        onSaveTime={(nextTime) => saveReminderSettings(true, nextTime)}
+        onRequestPermission={handleRequestReminderPermission}
+        onSendTestNotification={() => triggerDailyReminder(true)}
+        onStartReading={() => {
+          const latestBook = recentlyReadItems[0]?.book || filteredBooks[0] || books[0];
+          if (latestBook) {
+            openBookReader(latestBook, 'read');
+          }
+        }}
+        onOpenProfile={
+          user && profile
+            ? () => {
+                void flushPendingReadingLog();
+                setProfileDrawerOpen(true);
+              }
+            : undefined
+        }
       />
 
       {activeBook && (

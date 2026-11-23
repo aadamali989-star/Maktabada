@@ -53,6 +53,7 @@ interface ProfileDrawerProps {
   onLogout: () => void;
   onOpenAdminPanel?: () => void;
   onTestDailyReminder?: () => void;
+  onReminderSettingsChange?: (settings: { enabled: boolean; time: string }) => void;
   onNotify?: (msg: string) => void;
 }
 
@@ -79,6 +80,7 @@ export function ProfileDrawer({
   onLogout,
   onOpenAdminPanel,
   onTestDailyReminder,
+  onReminderSettingsChange,
   onNotify,
 }: ProfileDrawerProps) {
   const [nameInput, setNameInput] = useState(profile?.name || '');
@@ -298,6 +300,7 @@ export function ProfileDrawer({
       setReminderEnabled(saved.enabled);
       setReminderTimeInput(saved.time);
       writeCachedDailyReminder(profile.uid, saved);
+      onReminderSettingsChange?.(saved);
       onNotify?.(
         saved.enabled
           ? `Xasuusinta maalinlaha ah waa la daaray (${saved.time}).`
@@ -322,6 +325,7 @@ export function ProfileDrawer({
       setReminderEnabled(saved.enabled);
       setReminderTimeInput(saved.time);
       writeCachedDailyReminder(profile.uid, saved);
+      onReminderSettingsChange?.(saved);
       onNotify?.(`Waqtiga xasuusinta maalinlaha ah waa la kaydiyay (${saved.time}).`);
     } catch (err) {
       setReminderErrorMsg(err instanceof Error ? err.message : 'Waqtiga lama kaydin karin.');
@@ -764,7 +768,7 @@ export function ProfileDrawer({
                 </button>
               </div>
 
-              {reminderEnabled && (
+              {reminderEnabled ? (
                 <form
                   onSubmit={handleSaveReminderTime}
                   className="mt-4 pt-4 border-t border-[#EFECE5] dark:border-[#2E2C29] space-y-3"
@@ -846,6 +850,22 @@ export function ProfileDrawer({
                     )}
                   </div>
                 </form>
+              ) : (
+                onTestDailyReminder && (
+                  <div className="mt-3 pt-3 border-t border-[#EFECE5] dark:border-[#2E2C29] flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs text-[#78716C] dark:text-[#A8A29E]">
+                      Daar batoonka kore ama tijaabi hadda.
+                    </span>
+                    <button
+                      type="button"
+                      onClick={onTestDailyReminder}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-[#D6CEBE] dark:border-[#383531] text-[#1C1917] dark:text-[#F5F2EB] rounded-lg hover:bg-[#F8F6F1] dark:hover:bg-[#292724] transition-colors whitespace-nowrap shrink-0"
+                    >
+                      <BellRing className="w-3.5 h-3.5" />
+                      <span>Tijaabi</span>
+                    </button>
+                  </div>
+                )
               )}
 
               {reminderErrorMsg && (
