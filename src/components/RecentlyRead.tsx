@@ -11,10 +11,16 @@ export interface RecentlyReadItem {
 interface RecentlyReadProps {
   items: RecentlyReadItem[];
   sessionSecondsByBook?: Record<string, number>;
+  preferStyledCover?: boolean;
   onResume: (book: Book) => void;
 }
 
-export function RecentlyRead({ items, sessionSecondsByBook = {}, onResume }: RecentlyReadProps) {
+export function RecentlyRead({
+  items,
+  sessionSecondsByBook = {},
+  preferStyledCover = false,
+  onResume,
+}: RecentlyReadProps) {
   if (items.length === 0) {
     return null;
   }
@@ -61,13 +67,15 @@ export function RecentlyRead({ items, sessionSecondsByBook = {}, onResume }: Rec
                 type="button"
                 onClick={() => onResume(book)}
                 aria-label={`Sii wad ${book.title}`}
-                className="w-24 sm:w-28 shrink-0 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-[#14532D]"
+                className="w-24 sm:w-28 shrink-0 bg-[#EFECE5] dark:bg-[#171614] block overflow-hidden text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-[#14532D]"
               >
                 <BookCover
                   src={book.coverUrl}
                   title={book.title}
                   author={book.author}
                   category={book.category}
+                  size="sm"
+                  preferStyledFallback={preferStyledCover}
                   className="h-full"
                 />
               </button>

@@ -16,9 +16,15 @@ import {
   Check,
   WifiOff,
   Clock,
+  Loader2,
 } from 'lucide-react';
 import type { Book, ReaderTheme, ReadingProgress } from '../types';
-import { triggerBookDownload } from '../services/libraryService';
+import {
+  extractErrorMessage,
+  isMaktabadaCloudFileUrl,
+  resolveBookFileUrl,
+  triggerBookDownload,
+} from '../services/libraryService';
 import { normalizeGitHubAssetUrl } from '../services/githubHostService';
 import { StarRating } from './StarRating';
 import { BookComments } from './BookComments';
@@ -171,6 +177,52 @@ export function ReaderModal({
   );
   const onReadingTickRef = useRef(onReadingTick);
   onReadingTickRef.current = onReadingTick;
+
+  const [resolvedFileUrl, setResolvedFileUrl] = useState<string>(() =>
+    book?.fileUrl && !isMaktabadaCloudFileUrl(book.fileUrl)
+      ? normalizeGitHubAssetUrl(book.fileUrl)
+      : ''
+  );
+  const [resolvingFile, setResolvingFile] = useState<boolean>(false);
+  const [fileResolveError, setFileResolveError] = useState<string>('');
+  const [fileRetryTick, setFileRetryTick] = useState<number>(0);
+
+  useEffect(() => {
+    if (!book?.fileUrl) {
+      setResolvedFileUrl('');
+      setResolvingFile(false);
+      setFileResolveError('');
+      return;
+    }
+
+    if (!isMaktabadaCloudFileUrl(book.fileUrl)) {
+      setResolvedFileUrl(normalizeGitHubAssetUrl(book.fileUrl));
+      setResolvingFile(false);
+      setFileResolveError('');
+      return;
+    }
+
+    let cancelled = false;
+    setResolvingFile(true);
+    setFileResolveError('');
+    setResolvedFileUrl('');
+
+    resolveBookFileUrl(book, isAdmin)
+      .then((url) => {
+        if (cancelled) return;
+        setResolvedFileUrl(url);
+        setResolvingFile(false);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setFileResolveError(extractErrorMessage(err, 'Faylka buugga lama furi karin.'));
+        setResolvingFile(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [book, isAdmin, fileRetryTick]);
 
   useEffect(() => {
     setSessionSeconds(0);
@@ -382,10 +434,12 @@ export function ReaderModal({
     .map((p) => p.trim())
     .filter(Boolean);
 
-  const normalizedFileUrl = normalizeGitHubAssetUrl(book.fileUrl || '');
-  const iframeSrc = book.allowDownload
-    ? `${normalizedFileUrl}#page=${currentPage}`
-    : `${normalizedFileUrl}#toolbar=0&navpanes=0&page=${currentPage}`;
+  const normalizedFileUrl = resolvedFileUrl;
+  const iframeSrc = normalizedFileUrl
+    ? book.allowDownload
+      ? `${normalizedFileUrl}#page=${currentPage}`
+      : `${normalizedFileUrl}#toolbar=0&navpanes=0&page=${currentPage}`
+    : '';
 
   return (
     <div
@@ -561,7 +615,7 @@ export function ReaderModal({
                 )}
                 <button
                   type="button"
-                  onClick={() => triggerBookDownload(book)}
+                  onClick={() => void triggerBookDownload(book, isAdmin)}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-[#14532D] text-white hover:bg-[#0F3F22] transition-colors whitespace-nowrap shrink-0"
                 >
                   <Download className="w-3.5 h-3.5" />
@@ -655,7 +709,7 @@ export function ReaderModal({
                     variant="detail"
                     onRate={onRate ? (rating) => onRate(book.id, rating) : undefined}
                   />
-                  {book.allowDownload && (
+                  {book.allowDownload && normalizedFileUrl && (
                     <a
                       href={normalizedFileUrl}
                       target="_blank"
@@ -667,7 +721,7 @@ export function ReaderModal({
                   )}
                 </div>
               </div>
-              {!isOnline && !normalizedFileUrl.startsWith('data:') ? (
+              {!isOnline && !normalizedFileUrl.startsWith('data:') && !normalizedFileUrl.startsWith('blob:') ? (
                 <div className="flex-1 flex flex-col items-center justify-center p-8 text-center max-w-md mx-auto">
                   <WifiOff className={`w-8 h-8 mb-3 ${styles.muted}`} />
                   <h3 className="font-serif text-lg font-semibold mb-2">
@@ -686,6 +740,30 @@ export function ReaderModal({
                       U Gudub Qoraalka Offline
                     </button>
                   )}
+                </div>
+              ) : resolvingFile ? (
+                <div className="flex-1 flex flex-col items-center justify-center p-8 text-center">
+                  <Loader2 className={`w-7 h-7 mb-3 animate-spin ${styles.muted}`} />
+                  <p className={`text-sm ${styles.muted}`}>
+                    Soo furaya faylka buugga...
+                  </p>
+                </div>
+              ) : fileResolveError ? (
+                <div className="flex-1 flex flex-col items-center justify-center p-8 text-center max-w-md mx-auto">
+                  <FileText className={`w-8 h-8 mb-3 ${styles.muted}`} />
+                  <h3 className="font-serif text-lg font-semibold mb-2">
+                    Faylka lama furi karin
+                  </h3>
+                  <p className={`text-sm mb-5 ${styles.muted}`}>
+                    {fileResolveError}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setFileRetryTick((t) => t + 1)}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-medium bg-[#14532D] text-white rounded-lg hover:bg-[#0F3F22] transition-colors"
+                  >
+                    Isku day mar kale
+                  </button>
                 </div>
               ) : book.fileType === 'epub' ? (
                 <div className="flex-1 flex flex-col items-center justify-center p-8 text-center max-w-md mx-auto">
@@ -710,7 +788,7 @@ export function ReaderModal({
                     {book.allowDownload && (
                       <button
                         type="button"
-                        onClick={() => triggerBookDownload(book)}
+                        onClick={() => void triggerBookDownload(book, isAdmin)}
                         className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-medium border border-current rounded-lg hover:opacity-80 transition-opacity"
                       >
                         <Download className="w-3.5 h-3.5" />
@@ -719,7 +797,7 @@ export function ReaderModal({
                     )}
                   </div>
                 </div>
-              ) : (
+              ) : iframeSrc ? (
                 <iframe
                   src={iframeSrc}
                   title={book.title}
@@ -727,7 +805,7 @@ export function ReaderModal({
                     theme === 'dark' ? 'bg-[#1F1E1C]' : 'bg-white'
                   }`}
                 />
-              )}
+              ) : null}
             </div>
           ) : effectiveView === 'comments' ? (
             <div className="max-w-2xl mx-auto px-6 sm:px-10 py-10 sm:py-14">

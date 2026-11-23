@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { User } from 'firebase/auth';
 import {
+  BellRing,
+  Check,
   Search,
   BookOpen,
   Heart,
@@ -9,8 +11,11 @@ import {
   Moon,
   Sun,
   HardDriveDownload,
+  Image as ImageIcon,
+  Palette,
   WifiOff,
   Trash2,
+  X,
 } from 'lucide-react';
 import {
   computeReadingStreak,
@@ -29,6 +34,7 @@ import {
   subscribeUserReadingProgress,
   toggleBookDownloadable,
   toggleFavoriteBook,
+  upgradeStarterBookCovers,
 } from './services/libraryService';
 import {
   clearAllOfflineBooks,
@@ -56,6 +62,17 @@ import { RecentlyRead, type RecentlyReadItem } from './components/RecentlyRead';
 import { ProfileDrawer } from './components/ProfileDrawer';
 import { UserAvatar } from './components/UserAvatar';
 import { PWAInstallButton } from './components/PWAInstallButton';
+import { heroLibrarySanctuaryUrl } from './assets/starterAssets';
+import {
+  getLastReminderSentDate,
+  getLocalTimeHHMM,
+  getReminderDismissedDate,
+  markReminderDismissedDate,
+  markReminderSentDate,
+  normalizeReminderTime,
+  readCachedDailyReminder,
+  showDailyReadingBrowserNotification,
+} from './services/dailyReminderService';
 
 const READER_DARK_MODE_KEY = 'maktabada_reader_dark_mode';
 const RECENTLY_READ_STORAGE_PREFIX = 'maktabada_recently_read_';
@@ -128,7 +145,8 @@ export default function App() {
 
   const [section, setSection] = useState<AppSection>('library');
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState<string>('Dhammaan');
+  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
+  const [coverDisplayMode, setCoverDisplayMode] = useState<'image' | 'styled'>('image');
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [profileDrawerOpen, setProfileDrawerOpen] = useState(false);
   const openProfileOnAuthRef = useRef(false);
@@ -156,6 +174,10 @@ export default function App() {
   const [sessionSecondsByBook, setSessionSecondsByBook] = useState<Record<string, number>>({});
   const [readingLogsMap, setReadingLogsMap] = useState<Record<string, DailyReadingLog>>({});
   const [readingStreakLoading, setReadingStreakLoading] = useState<boolean>(false);
+  const [dailyReminderBanner, setDailyReminderBanner] = useState<{
+    title: string;
+    body: string;
+  } | null>(null);
   const pendingReadingLogRef = useRef<PendingReadingLog | null>(null);
 
   const flushPendingReadingLog = useCallback(async () => {
@@ -279,7 +301,17 @@ export default function App() {
 
   const handleSelectSection = (nextSection: AppSection) => {
     setSection(nextSection);
-    setSelectedCategory('Dhammaan');
+    setSelectedCategories([]);
+  };
+
+  const toggleCategoryFilter = (category: string) => {
+    if (category === 'Dhammaan') {
+      setSelectedCategories([]);
+      return;
+    }
+    setSelectedCategories((prev) =>
+      prev.includes(category) ? prev.filter((item) => item !== category) : [...prev, category]
+    );
   };
 
   // Subscribe to Firestore books once auth state is known
@@ -298,7 +330,8 @@ export default function App() {
     return () => unsub();
   }, [authReady, isAdmin]);
 
-  // Seed starter Somali books into Firestore when an Admin signs into an empty database
+  // Seed starter Somali books into Firestore when an Admin signs into an empty database,
+  // and refresh legacy starter cover URLs if they were seeded with earlier placeholder covers.
   useEffect(() => {
     if (!authReady || !booksLoaded || !isAdmin || !user || seededRef.current) return;
     if (firestoreBooks.length === 0) {
@@ -306,8 +339,11 @@ export default function App() {
       void seedStarterBooksIfEmpty(user.uid).catch((err) => {
         console.error('Failed to seed starter books:', err);
       });
+    } else {
+      seededRef.current = true;
+      void upgradeStarterBookCovers(firestoreBooks);
     }
-  }, [authReady, booksLoaded, isAdmin, user, firestoreBooks.length]);
+  }, [authReady, booksLoaded, isAdmin, user, firestoreBooks]);
 
   // Fetch current user's existing star ratings for Firestore-backed books
   useEffect(() => {
@@ -393,6 +429,118 @@ export default function App() {
   }, [isOnline, flushPendingReadingLog]);
 
   const readingStreak = useMemo(() => computeReadingStreak(readingLogsMap), [readingLogsMap]);
+
+  const triggerDailyReminder = useCallback(
+    async (isTest = false) => {
+      const goalMinutes =
+        typeof profile?.dailyReadingGoalMinutes === 'number' &&
+        profile.dailyReadingGoalMinutes >= 5 &&
+        profile.dailyReadingGoalMinutes <= 480
+          ? profile.dailyReadingGoalMinutes
+          : 15;
+      const todayMinutes = readingStreak.todayMinutes;
+      const remainingMinutes = Math.max(0, goalMinutes - todayMinutes);
+
+      const title = isTest
+        ? 'Tijaabada Xasuusinta Akhriska · maktabada.so'
+        : 'Waqtigii Akhriska Maanta · maktabada.so';
+      const body =
+        remainingMinutes > 0
+          ? `Waxaa kuu haray ${remainingMinutes} daqiiqo si aad u gaarto hadafkaaga maanta (${goalMinutes} daqiiqo).${
+              readingStreak.currentStreak > 0
+                ? ` Ilaali ${readingStreak.currentStreak}-maalmood streak-kaaga!`
+                : ''
+            }`
+          : `Hadafkaaga maanta (${goalMinutes} daqiiqo) waad buuxisay! Waad sii akhrisan kartaa bogagga cusub.`;
+
+      setDailyReminderBanner({ title, body });
+      const nativeShown = await showDailyReadingBrowserNotification({
+        title,
+        body,
+        tag: isTest ? 'maktabada-reminder-test' : 'maktabada-daily-reading-reminder',
+      });
+      if (isTest) {
+        showToast(
+          nativeShown
+            ? 'Ogeysiiska tijaabada waa la diray (Browser + Website).'
+            : 'Ogeysiiska tijaabada waxaa laga muujiyay bogga sare ee website-ka.'
+        );
+      }
+    },
+    [
+      profile?.dailyReadingGoalMinutes,
+      readingStreak.todayMinutes,
+      readingStreak.currentStreak,
+      showToast,
+    ]
+  );
+
+  useEffect(() => {
+    if (!authReady || !user || !profile) {
+      setDailyReminderBanner(null);
+      return;
+    }
+
+    const checkDailyReminder = () => {
+      const cached = readCachedDailyReminder(user.uid);
+      const enabled =
+        typeof profile.dailyReminderEnabled === 'boolean'
+          ? profile.dailyReminderEnabled
+          : cached.enabled;
+      if (!enabled) {
+        setDailyReminderBanner(null);
+        return;
+      }
+
+      const targetTime = normalizeReminderTime(profile.dailyReminderTime || cached.time);
+      const goalMinutes =
+        typeof profile.dailyReadingGoalMinutes === 'number' &&
+        profile.dailyReadingGoalMinutes >= 5 &&
+        profile.dailyReadingGoalMinutes <= 480
+          ? profile.dailyReadingGoalMinutes
+          : 15;
+      const goalCompleted = readingStreak.todaySeconds >= goalMinutes * 60;
+      if (goalCompleted) {
+        setDailyReminderBanner(null);
+        return;
+      }
+
+      const todayKey = getLocalDateKey();
+      const dismissedToday = getReminderDismissedDate(user.uid) === todayKey;
+      if (dismissedToday) {
+        return;
+      }
+
+      const nowTime = getLocalTimeHHMM();
+      if (nowTime < targetTime) {
+        return;
+      }
+
+      const alreadySentToday = getLastReminderSentDate(user.uid) === todayKey;
+      if (!alreadySentToday) {
+        markReminderSentDate(user.uid, todayKey);
+        void triggerDailyReminder(false);
+      } else if (!dailyReminderBanner) {
+        const remainingMinutes = Math.max(1, goalMinutes - readingStreak.todayMinutes);
+        setDailyReminderBanner({
+          title: 'Xasuusinta Akhriska Maanta · maktabada.so',
+          body: `Waxaa kuu haray ${remainingMinutes} daqiiqo si aad u gaarto hadafkaaga maanta (${goalMinutes} daqiiqo).`,
+        });
+      }
+    };
+
+    checkDailyReminder();
+    const interval = window.setInterval(checkDailyReminder, 20000);
+    return () => window.clearInterval(interval);
+  }, [
+    authReady,
+    user,
+    profile,
+    readingStreak.todaySeconds,
+    readingStreak.todayMinutes,
+    dailyReminderBanner,
+    triggerDailyReminder,
+  ]);
 
   const effectiveProgressMap = useMemo(() => {
     const merged: Record<string, ReadingProgress> = { ...offlineProgressMap };
@@ -483,8 +631,7 @@ export default function App() {
 
   const favorites = profile?.favorites ?? [];
 
-  const filteredBooks = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
+  const sectionBooks = useMemo(() => {
     return books.filter((book) => {
       if (section === 'favorites' && !favorites.includes(book.id)) {
         return false;
@@ -492,7 +639,29 @@ export default function App() {
       if (section === 'offline' && !offlineBooksMap[book.id]) {
         return false;
       }
-      if (selectedCategory !== 'Dhammaan' && book.category !== selectedCategory) {
+      return true;
+    });
+  }, [books, section, favorites, offlineBooksMap]);
+
+  const categoryCounts = useMemo(() => {
+    const counts: Record<string, number> = { Dhammaan: sectionBooks.length };
+    for (const book of sectionBooks) {
+      if (book.category) {
+        counts[book.category] = (counts[book.category] || 0) + 1;
+      }
+    }
+    return counts;
+  }, [sectionBooks]);
+
+  const activeCategories = useMemo(
+    () => selectedCategories.filter((cat) => categories.includes(cat)),
+    [selectedCategories, categories]
+  );
+
+  const filteredBooks = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return sectionBooks.filter((book) => {
+      if (activeCategories.length > 0 && !activeCategories.includes(book.category)) {
         return false;
       }
       if (!q) return true;
@@ -503,7 +672,7 @@ export default function App() {
         book.description.toLowerCase().includes(q)
       );
     });
-  }, [books, section, favorites, offlineBooksMap, selectedCategory, searchQuery]);
+  }, [sectionBooks, activeCategories, searchQuery]);
 
   const handleToggleFavorite = async (bookId: string) => {
     if (!user || !profile) {
@@ -738,7 +907,10 @@ export default function App() {
               <>
                 <button
                   type="button"
-                  onClick={() => setProfileDrawerOpen(true)}
+                  onClick={() => {
+                    void flushPendingReadingLog();
+                    setProfileDrawerOpen(true);
+                  }}
                   aria-label="Fur bogga akoonkaaga (Profile)"
                   className="inline-flex items-center gap-2 pl-1.5 pr-3 py-1.5 text-xs font-medium border border-[#D6CEBE] dark:border-[#383531] bg-white dark:bg-[#1C1B19] text-[#1C1917] dark:text-[#F5F2EB] rounded-lg hover:bg-[#EFECE5] dark:hover:bg-[#292724] transition-colors whitespace-nowrap shrink-0"
                 >
@@ -828,6 +1000,61 @@ export default function App() {
           </div>
         )}
 
+        {dailyReminderBanner && (
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 pt-5">
+            <div
+              role="status"
+              className="bg-[#14532D]/[0.06] dark:bg-[#15803D]/15 border border-[#14532D]/25 dark:border-[#22C55E]/30 rounded-xl px-4 py-3 flex flex-wrap items-center justify-between gap-3"
+            >
+              <div className="flex items-start sm:items-center gap-3 min-w-0">
+                <div className="w-8 h-8 rounded-lg bg-[#14532D] dark:bg-[#15803D] text-white flex items-center justify-center shrink-0">
+                  <BellRing className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold text-[#14532D] dark:text-[#4ADE80]">
+                    {dailyReminderBanner.title}
+                  </p>
+                  <p className="text-xs sm:text-sm text-[#1C1917] dark:text-[#F5F2EB]">
+                    {dailyReminderBanner.body}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const latestBook = recentlyReadItems[0]?.book || filteredBooks[0] || books[0];
+                    setDailyReminderBanner(null);
+                    if (user) {
+                      markReminderDismissedDate(user.uid, getLocalDateKey());
+                    }
+                    if (latestBook) {
+                      openBookReader(latestBook, 'read');
+                    }
+                  }}
+                  className="px-3 py-1.5 text-xs font-medium bg-[#14532D] dark:bg-[#15803D] text-white rounded-lg hover:bg-[#0F3F22] dark:hover:bg-[#166534] transition-colors whitespace-nowrap"
+                >
+                  Akhri Hadda
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (user) {
+                      markReminderDismissedDate(user.uid, getLocalDateKey());
+                    }
+                    setDailyReminderBanner(null);
+                  }}
+                  aria-label="Xir xasuusinta maanta"
+                  className="p-1.5 rounded-lg text-[#57534E] dark:text-[#A8A29E] hover:text-[#1C1917] dark:hover:text-[#F5F2EB] hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {section === 'library' && (
           <>
             {/* Editorial Hero Showcase */}
@@ -855,7 +1082,10 @@ export default function App() {
                       {user ? (
                         <button
                           type="button"
-                          onClick={() => setProfileDrawerOpen(true)}
+                          onClick={() => {
+                            void flushPendingReadingLog();
+                            setProfileDrawerOpen(true);
+                          }}
                           className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium border border-[#D6CEBE] dark:border-[#383531] text-[#1C1917] dark:text-[#F5F2EB] rounded-lg hover:bg-[#F8F6F1] dark:hover:bg-[#292724] transition-colors whitespace-nowrap shrink-0"
                         >
                           Eeg Akoonkaaga ({favorites.length} Favorites)
@@ -898,7 +1128,7 @@ export default function App() {
                 <div className="lg:col-span-6">
                   <div className="h-64 sm:h-80 lg:h-full rounded-xl overflow-hidden border border-[#E5E0D5] dark:border-[#2E2C29] bg-[#EFECE5] dark:bg-[#242320]">
                     <img
-                      src="/src/assets/images/hero_library_sanctuary_1795275335858.jpg"
+                      src={heroLibrarySanctuaryUrl}
                       alt="Qolka akhriska ee maktabada.so"
                       referrerPolicy="no-referrer"
                       className="w-full h-full object-cover"
@@ -911,6 +1141,7 @@ export default function App() {
             <RecentlyRead
               items={recentlyReadItems}
               sessionSecondsByBook={sessionSecondsByBook}
+              preferStyledCover={coverDisplayMode === 'styled'}
               onResume={(b) => openBookReader(b, 'read')}
             />
           </>
@@ -998,22 +1229,91 @@ export default function App() {
               </div>
             </div>
 
-            {/* Category Interactive Filter Buttons */}
-            <div className="flex items-center gap-2 overflow-x-auto pb-6">
-              {categories.map((cat) => (
+            {/* Category Multi-Select Filter Buttons & Cover Mode Toggle */}
+            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 pb-6">
+              <div
+                role="group"
+                aria-label="Shaandhaynta qaybaha buugagga (waxaad dooran kartaa in ka badan hal qayb)"
+                className="flex flex-wrap items-center gap-2"
+              >
+                {categories.map((cat) => {
+                  const isAll = cat === 'Dhammaan';
+                  const isSelected = isAll
+                    ? activeCategories.length === 0
+                    : activeCategories.includes(cat);
+                  const count = categoryCounts[cat] ?? 0;
+
+                  return (
+                    <button
+                      key={cat}
+                      type="button"
+                      onClick={() => toggleCategoryFilter(cat)}
+                      aria-pressed={isSelected}
+                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
+                        isSelected
+                          ? 'bg-[#14532D] dark:bg-[#15803D] border-[#14532D] dark:border-[#15803D] text-white'
+                          : 'bg-white dark:bg-[#1C1B19] border-[#E5E0D5] dark:border-[#2E2C29] text-[#57534E] dark:text-[#D6D3CD] hover:text-[#1C1917] dark:hover:text-[#F5F2EB] hover:border-[#D6CEBE] dark:hover:border-[#4A4640]'
+                      }`}
+                    >
+                      {!isAll && isSelected && <Check className="w-3.5 h-3.5 shrink-0" />}
+                      <span>{cat}</span>
+                      <span
+                        className={`font-mono tabular-nums text-[11px] ${
+                          isSelected
+                            ? 'text-white/80'
+                            : 'text-[#78716C] dark:text-[#A8A29E]'
+                        }`}
+                      >
+                        {count}
+                      </span>
+                    </button>
+                  );
+                })}
+
+                {activeCategories.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedCategories([])}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-dashed border-[#D6CEBE] dark:border-[#4A4640] text-[#57534E] dark:text-[#A8A29E] hover:text-[#1C1917] dark:hover:text-[#F5F2EB] hover:bg-[#EFECE5]/60 dark:hover:bg-[#242320] transition-colors whitespace-nowrap shrink-0"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                    <span>Nadiifi ({activeCategories.length})</span>
+                  </button>
+                )}
+              </div>
+
+              <div
+                role="group"
+                aria-label="Qaabka jaldiga buugagga"
+                className="inline-flex items-center gap-1 p-1 bg-[#EFECE5] dark:bg-[#1C1B19] border border-[#E5E0D5] dark:border-[#2E2C29] rounded-lg self-start sm:self-auto shrink-0"
+              >
                 <button
-                  key={cat}
                   type="button"
-                  onClick={() => setSelectedCategory(cat)}
-                  className={`px-3.5 py-1.5 text-xs font-medium rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
-                    selectedCategory === cat
-                      ? 'bg-[#14532D] dark:bg-[#15803D] border-[#14532D] dark:border-[#15803D] text-white'
-                      : 'bg-white dark:bg-[#1C1B19] border-[#E5E0D5] dark:border-[#2E2C29] text-[#57534E] dark:text-[#D6D3CD] hover:text-[#1C1917] dark:hover:text-[#F5F2EB] hover:border-[#D6CEBE] dark:hover:border-[#4A4640]'
+                  onClick={() => setCoverDisplayMode('image')}
+                  aria-pressed={coverDisplayMode === 'image'}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                    coverDisplayMode === 'image'
+                      ? 'bg-white dark:bg-[#292724] text-[#1C1917] dark:text-[#F5F2EB] shadow-sm'
+                      : 'text-[#57534E] dark:text-[#A8A29E] hover:text-[#1C1917] dark:hover:text-[#F5F2EB]'
                   }`}
                 >
-                  {cat}
+                  <ImageIcon className="w-3.5 h-3.5" />
+                  <span>Sawirro</span>
                 </button>
-              ))}
+                <button
+                  type="button"
+                  onClick={() => setCoverDisplayMode('styled')}
+                  aria-pressed={coverDisplayMode === 'styled'}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                    coverDisplayMode === 'styled'
+                      ? 'bg-white dark:bg-[#292724] text-[#1C1917] dark:text-[#F5F2EB] shadow-sm'
+                      : 'text-[#57534E] dark:text-[#A8A29E] hover:text-[#1C1917] dark:hover:text-[#F5F2EB]'
+                  }`}
+                >
+                  <Palette className="w-3.5 h-3.5" />
+                  <span>Midabbo &amp; Frame</span>
+                </button>
+              </div>
             </div>
 
             {/* Inline Delete Confirmation Banner (replaces window.confirm) */}
@@ -1076,7 +1376,7 @@ export default function App() {
                     ? 'Guji badhanka "Kaydi Offline" ee buug kasta oo leh Soo Dejin Furan si uu ugu kaydsamo localStorage oo aad u akhrido internet la\'aan.'
                     : 'Wax buug ah oo u dhigma raadintaada lama helin. Isku day erey kale ama dooro "Dhammaan".'}
                 </p>
-                {section === 'offline' && (
+                {section === 'offline' && sectionBooks.length === 0 ? (
                   <button
                     type="button"
                     onClick={() => handleSelectSection('library')}
@@ -1084,7 +1384,18 @@ export default function App() {
                   >
                     U Gudub Maktabadda
                   </button>
-                )}
+                ) : (activeCategories.length > 0 || searchQuery.trim().length > 0) ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedCategories([]);
+                      setSearchQuery('');
+                    }}
+                    className="px-4 py-2 text-xs font-medium bg-[#14532D] dark:bg-[#15803D] text-white rounded-lg hover:bg-[#0F3F22] dark:hover:bg-[#166534] transition-colors"
+                  >
+                    Nadiifi Shaandhaynta
+                  </button>
+                ) : null}
               </div>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
@@ -1094,6 +1405,7 @@ export default function App() {
                     book={book}
                     isFavorite={favorites.includes(book.id)}
                     isAdmin={isAdmin}
+                    preferStyledCover={coverDisplayMode === 'styled'}
                     isOfflineSaved={Boolean(offlineBooksMap[book.id])}
                     offlineBusy={offlineBusyBookId === book.id}
                     isOnline={isOnline}
@@ -1172,6 +1484,9 @@ export default function App() {
         onOpenBook={(b) => openBookReader(b, 'read')}
         onToggleFavorite={handleToggleFavorite}
         onOpenAdminPanel={isAdmin ? () => handleSelectSection('admin') : undefined}
+        onTestDailyReminder={() => {
+          void triggerDailyReminder(true);
+        }}
         onLogout={handleLogout}
         onNotify={showToast}
       />

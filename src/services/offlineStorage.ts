@@ -4,6 +4,7 @@ import {
   type OfflineBookRecord,
   type ReadingProgress,
 } from '../types';
+import { isMaktabadaCloudFileUrl, resolveBookFileUrl } from './libraryService';
 
 const OFFLINE_BOOKS_STORAGE_KEY = 'maktabada_offline_books_v1';
 const OFFLINE_PROGRESS_STORAGE_PREFIX = 'maktabada_offline_progress_';
@@ -130,7 +131,10 @@ export async function saveBookForOffline(
   ) {
     // Best-effort inline cache for small PDFs so they can even render offline
     try {
-      const response = await fetch(fileUrl);
+      const fetchTarget = isMaktabadaCloudFileUrl(fileUrl)
+        ? await resolveBookFileUrl(book)
+        : fileUrl;
+      const response = await fetch(fetchTarget);
       if (response.ok) {
         const blob = await response.blob();
         if (blob.size > 0 && blob.size <= MAX_INLINE_FILE_BYTES) {

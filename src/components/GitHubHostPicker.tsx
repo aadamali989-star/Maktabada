@@ -184,12 +184,16 @@ export function GitHubHostPicker({
       {uploadStatus && (
         <p
           className={`text-xs leading-relaxed ${
-            uploadStatus.configured
+            uploadStatus.tokenError
+              ? 'text-[#991B1B] dark:text-[#FCA5A5]'
+              : uploadStatus.configured
               ? 'text-[#14532D] dark:text-[#4ADE80]'
               : 'text-[#57534E] dark:text-[#A8A29E]'
           }`}
         >
-          {uploadStatus.configured
+          {uploadStatus.tokenError
+            ? uploadStatus.tokenError
+            : uploadStatus.configured
             ? `Isku xirka tooska ah wuu shaqaynayaa (${uploadStatus.repo}): fayl kasta oo aad hoos ka doorato si toos ah ayuu GitHub ugu kaydsamayaa markaad gujiso Kaydi.`
             : 'Soo gelinta tooska ah ee PDF/EPUB (1-gujis) waxay sugaysaa GITHUB_TOKEN in lagu daro Secrets / Netlify Env Vars. Hadda waad ka soo dooran kartaa faylasha repo-ga ama toos baad u gelin kartaa TXT & sawirro.'}
         </p>
@@ -326,7 +330,7 @@ export function GitHubHostPicker({
             id="external-cover-url"
             type="url"
             disabled={disabled}
-            maxLength={BLUEPRINT_LIMITS.book.urlMax}
+            maxLength={BLUEPRINT_LIMITS.book.coverUrlMax}
             value={coverUrl}
             onChange={(e) => onCoverUrlChange(e.target.value)}
             onBlur={(e) => {

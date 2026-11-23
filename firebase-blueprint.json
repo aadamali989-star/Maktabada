@@ -46,6 +46,21 @@
           "type": "array",
           "description": "Bounded list of book IDs favorited by the user (max 100)."
         },
+        "dailyReadingGoalMinutes": {
+          "type": "integer",
+          "description": "User-configured daily reading goal in minutes per day (5 to 480)."
+        },
+        "dailyReminderEnabled": {
+          "type": "boolean",
+          "description": "Whether daily reading reminder notifications are enabled for the user."
+        },
+        "dailyReminderTime": {
+          "type": "string",
+          "description": "Preferred daily reading reminder time in 24-hour HH:MM format.",
+          "minLength": 5,
+          "maxLength": 5,
+          "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+        },
         "online": {
           "type": "boolean",
           "description": "Whether the user is currently active in the library."
@@ -99,8 +114,8 @@
         },
         "coverUrl": {
           "type": "string",
-          "description": "Firebase Storage URL or local bundled asset path for the cover image.",
-          "maxLength": 2000
+          "description": "Cover image URL, bundled asset path, or compact HD WebP cover data URL.",
+          "maxLength": 120000
         },
         "fileUrl": {
           "type": "string",
@@ -338,6 +353,72 @@
         }
       },
       "required": ["userId", "dateKey", "secondsRead", "createdAt", "updatedAt"]
+    },
+    "BookFileChunk": {
+      "title": "BookFileChunk",
+      "description": "Ordered base64 binary chunk of a PDF or EPUB book file stored directly inside Firestore.",
+      "type": "object",
+      "properties": {
+        "bookId": {
+          "type": "string",
+          "description": "ID of the parent book document.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "index": {
+          "type": "integer",
+          "description": "Zero-based chunk order index (0 to 59)."
+        },
+        "totalChunks": {
+          "type": "integer",
+          "description": "Total number of chunks belonging to this book file (1 to 60)."
+        },
+        "mimeType": {
+          "type": "string",
+          "description": "MIME type of the reassembled file (e.g. application/pdf).",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "dataBase64": {
+          "type": "string",
+          "description": "Base64-encoded binary slice of the book file.",
+          "minLength": 1,
+          "maxLength": 600000
+        },
+        "published": {
+          "type": "boolean",
+          "description": "Visibility flag synced with the parent book."
+        },
+        "createdBy": {
+          "type": "string",
+          "description": "UID of the admin who uploaded this file chunk.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable server timestamp when the chunk was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the latest chunk update."
+        }
+      },
+      "required": [
+        "bookId",
+        "index",
+        "totalChunks",
+        "mimeType",
+        "dataBase64",
+        "published",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -356,6 +437,10 @@
     "/books/{bookId}": {
       "schema": { "$ref": "#/entities/Book" },
       "description": "Digital library catalog of books, covers, aggregate star ratings, and reader text."
+    },
+    "/books/{bookId}/fileChunks/{chunkId}": {
+      "schema": { "$ref": "#/entities/BookFileChunk" },
+      "description": "Ordered binary file chunks for PDF/EPUB books uploaded directly without external storage."
     },
     "/books/{bookId}/ratings/{userId}": {
       "schema": { "$ref": "#/entities/BookRating" },

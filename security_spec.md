@@ -31,4 +31,4 @@
 17. **Profile Bio/Avatar Exhaustion or Cross-User Edit**: User A attempts to update User B's `bio`/`avatarUrl` or submits `bio` >400 chars / `avatarUrl` >12000 chars -> `PERMISSION_DENIED`.
 18. **Cross-User or Invalid Date Key Reading Log**: User A writes to `/users/userB/readingLogs/2026-11-22` or targets invalid key `/users/userA/readingLogs/bad-date` -> `PERMISSION_DENIED`.
 19. **Out-of-Bounds Daily Reading Seconds**: User submits `secondsRead: 999999` or `secondsRead: -10` -> `PERMISSION_DENIED`.
-
+20. **Unauthorized or Oversized Book File Chunk**: Non-admin user attempts write to `/books/{bookId}/fileChunks/{chunkId}` or admin submits `dataBase64` > 600000 chars or `totalChunks` > 60 -> `PERMISSION_DENIED`.

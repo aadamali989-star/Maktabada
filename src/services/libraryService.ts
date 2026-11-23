@@ -64,6 +64,11 @@ import {
   normalizeGitHubAssetUrl,
   uploadFileToGitHubHost,
 } from './githubHostService';
+import {
+  fetchSupabaseStorageStatus,
+  SupabaseStorageUploadError,
+  uploadFileToSupabaseStorage,
+} from './supabaseStorageService';
 
 const BOOTSTRAPPED_ADMIN_EMAIL = 'aadamali989@gmail.com';
 
@@ -77,10 +82,16 @@ function sanitizeFileName(name: string): string {
 
 const MAX_COVER_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_BOOK_FILE_BYTES = 50 * 1024 * 1024;
+const MAX_FIRESTORE_CHUNKED_BOOK_BYTES = 20 * 1024 * 1024;
+const FIRESTORE_CHUNK_RAW_BYTES = 420 * 1024;
+const MAX_FIRESTORE_CHUNK_COUNT = 60;
+const MAKTABADA_CLOUD_SCHEME = 'maktabada-cloud://';
 const STORAGE_STALL_TIMEOUT_MS = 12000;
-const STORAGE_COVER_TIMEOUT_MS = 5000;
 const FIRESTORE_WRITE_TIMEOUT_MS = 15000;
 let storageUnavailableInSession = false;
+
+const resolvedBlobUrlCache = new Map<string, string>();
+const inFlightBlobResolvers = new Map<string, Promise<string>>();
 
 function assertBrowserOnline(): void {
   if (typeof navigator !== 'undefined' && navigator.onLine === false) {
@@ -108,9 +119,38 @@ async function withTimeout<T>(
   }
 }
 
-function validateOptionalHttpUrl(rawUrl: string | undefined, label: string): string {
-  const normalized = normalizeGitHubAssetUrl((rawUrl || '').trim());
-  if (!normalized) return '';
+function validateCoverUrlInput(rawUrl: string | undefined, label: string): string {
+  const trimmed = (rawUrl || '').trim();
+  if (!trimmed) return '';
+  if (trimmed.startsWith('data:image/') || trimmed.startsWith('maktabada-cover://')) {
+    if (trimmed.length > BLUEPRINT_LIMITS.book.coverUrlMax) {
+      throw new Error(`${label} wuu ka weyn yahay xadka la oggol yahay.`);
+    }
+    return trimmed;
+  }
+  if (trimmed.startsWith('/src/assets/') || trimmed.startsWith('/assets/')) {
+    return trimmed.slice(0, BLUEPRINT_LIMITS.book.coverUrlMax);
+  }
+  const normalized = normalizeGitHubAssetUrl(trimmed);
+  if (!normalized.startsWith('https://') && !normalized.startsWith('http://')) {
+    throw new Error(`${label} waa inuu ku bilaabmaa https:// ama http://`);
+  }
+  if (normalized.length > BLUEPRINT_LIMITS.book.coverUrlMax) {
+    throw new Error(`${label} wuu ka dheer yahay xadka.`);
+  }
+  return normalized;
+}
+
+function validateBookFileUrlInput(rawUrl: string | undefined, label: string): string {
+  const trimmed = (rawUrl || '').trim();
+  if (!trimmed) return '';
+  if (trimmed.startsWith(MAKTABADA_CLOUD_SCHEME)) {
+    if (trimmed.length > BLUEPRINT_LIMITS.book.urlMax) {
+      throw new Error(`${label} wuu ka dheer yahay xadka.`);
+    }
+    return trimmed;
+  }
+  const normalized = normalizeGitHubAssetUrl(trimmed);
   if (!normalized.startsWith('https://') && !normalized.startsWith('http://')) {
     throw new Error(`${label} waa inuu ku bilaabmaa https:// ama http://`);
   }
@@ -118,6 +158,185 @@ function validateOptionalHttpUrl(rawUrl: string | undefined, label: string): str
     throw new Error(`${label} wuu ka dheer yahay xadka (${BLUEPRINT_LIMITS.book.urlMax} xaraf).`);
   }
   return normalized;
+}
+
+export function isMaktabadaCloudFileUrl(url?: string): boolean {
+  return Boolean(url && url.trim().startsWith(MAKTABADA_CLOUD_SCHEME));
+}
+
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  const sliceSize = 0x8000;
+  const parts: string[] = [];
+  for (let i = 0; i < bytes.length; i += sliceSize) {
+    const sub = bytes.subarray(i, i + sliceSize);
+    parts.push(String.fromCharCode(...sub));
+  }
+  return btoa(parts.join(''));
+}
+
+function base64ToUint8Array(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const len = binary.length;
+  const out = new Uint8Array(len);
+  for (let i = 0; i < len; i += 1) {
+    out[i] = binary.charCodeAt(i);
+  }
+  return out;
+}
+
+function inferBookFileMimeType(fileName: string, explicitType?: string): string {
+  if (explicitType && explicitType.trim()) {
+    return sanitizeString(explicitType, 120);
+  }
+  const lower = fileName.toLowerCase();
+  if (lower.endsWith('.pdf')) return 'application/pdf';
+  if (lower.endsWith('.epub')) return 'application/epub+zip';
+  if (lower.endsWith('.txt') || lower.endsWith('.md')) return 'text/plain; charset=utf-8';
+  return 'application/octet-stream';
+}
+
+async function uploadBookFileChunksToFirestore(params: {
+  bookId: string;
+  adminUid: string;
+  file: File;
+  published: boolean;
+  stamp: number;
+  onStatus?: (label: string) => void;
+}): Promise<string> {
+  const { bookId, adminUid, file, published, stamp, onStatus } = params;
+  if (file.size > MAX_FIRESTORE_CHUNKED_BOOK_BYTES) {
+    throw new Error(
+      `Faylka buuggu wuu ka weyn yahay xadka kaydka tooska ah (20 MB). Fadlan dooro PDF ka yar 20 MB ama isticmaal Link HTTPS toos ah.`
+    );
+  }
+
+  onStatus?.('Diyaarinaya faylka buugga...');
+  const buffer = await file.arrayBuffer();
+  const allBytes = new Uint8Array(buffer);
+  if (allBytes.length === 0) {
+    throw new Error('Faylka aad dooratay waa mid madhan (0 bytes).');
+  }
+
+  const totalChunks = Math.max(1, Math.ceil(allBytes.length / FIRESTORE_CHUNK_RAW_BYTES));
+  if (totalChunks > MAX_FIRESTORE_CHUNK_COUNT) {
+    throw new Error('Faylku aad buu u weyn yahay (xadka waa 20 MB).');
+  }
+
+  const mimeType = inferBookFileMimeType(file.name, file.type);
+  const chunkPrefix = `chunk_${stamp}_`;
+  const createdChunkIds: string[] = [];
+
+  try {
+    for (let i = 0; i < totalChunks; i += 1) {
+      const start = i * FIRESTORE_CHUNK_RAW_BYTES;
+      const end = Math.min(allBytes.length, start + FIRESTORE_CHUNK_RAW_BYTES);
+      const dataBase64 = uint8ArrayToBase64(allBytes.subarray(start, end));
+      const chunkId = `${chunkPrefix}${i}`;
+
+      await withTimeout(
+        setDoc(doc(db, 'books', bookId, 'fileChunks', chunkId), {
+          bookId,
+          index: i,
+          totalChunks,
+          mimeType,
+          dataBase64,
+          published,
+          createdBy: adminUid,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        }),
+        FIRESTORE_WRITE_TIMEOUT_MS,
+        'Kaydinta faylka ee Firestore way daahday. Hubi khadkaaga.'
+      );
+
+      createdChunkIds.push(chunkId);
+      const pct = Math.min(99, Math.round(((i + 1) / totalChunks) * 100));
+      onStatus?.(`Kaydinaya faylka Maktabadda (${pct}%)...`);
+    }
+  } catch (err) {
+    await Promise.all(
+      createdChunkIds.map((cid) =>
+        deleteDoc(doc(db, 'books', bookId, 'fileChunks', cid)).catch(() => {})
+      )
+    );
+    throw err;
+  }
+
+  return `${MAKTABADA_CLOUD_SCHEME}${bookId}?v=${stamp}`;
+}
+
+async function deleteExistingBookFileChunks(
+  bookId: string,
+  keepPrefix?: string
+): Promise<void> {
+  try {
+    const snap = await getDocs(collection(db, 'books', bookId, 'fileChunks'));
+    const targets = keepPrefix
+      ? snap.docs.filter((d) => !d.id.startsWith(keepPrefix))
+      : snap.docs;
+    await Promise.all(targets.map((d) => deleteDoc(d.ref).catch(() => {})));
+  } catch {
+    // Best-effort cleanup
+  }
+}
+
+export function clearCachedBookBlobUrl(bookId: string): void {
+  for (const [key, blobUrl] of resolvedBlobUrlCache.entries()) {
+    if (key.startsWith(`${bookId}:`)) {
+      try {
+        URL.revokeObjectURL(blobUrl);
+      } catch {
+        // Ignore revoke errors
+      }
+      resolvedBlobUrlCache.delete(key);
+    }
+  }
+}
+
+export async function resolveBookFileUrl(book: Book, isAdmin = false): Promise<string> {
+  const rawUrl = (book.fileUrl || '').trim();
+  if (!rawUrl) return '';
+  if (!isMaktabadaCloudFileUrl(rawUrl)) {
+    return normalizeGitHubAssetUrl(rawUrl);
+  }
+
+  const cacheKey = `${book.id}:${rawUrl}`;
+  const cached = resolvedBlobUrlCache.get(cacheKey);
+  if (cached) return cached;
+
+  const existingTask = inFlightBlobResolvers.get(cacheKey);
+  if (existingTask) return existingTask;
+
+  const task = (async (): Promise<string> => {
+    const chunksCol = collection(db, 'books', book.id, 'fileChunks');
+    const q = isAdmin ? chunksCol : query(chunksCol, where('published', '==', true));
+    const snap = await getDocs(q);
+
+    if (snap.empty) {
+      throw new Error('Faylka buuggan lagama helin kaydka Firestore.');
+    }
+
+    const sorted = snap.docs
+      .map((d) => d.data() as { index?: number; mimeType?: string; dataBase64?: string })
+      .sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+
+    const mimeType = sorted[0]?.mimeType || inferBookFileMimeType(book.fileName || '');
+    const byteArrays = sorted.map((c) => base64ToUint8Array(c.dataBase64 || ''));
+    const blobParts = byteArrays.map((arr) => arr.buffer as ArrayBuffer);
+    const blob = new Blob(blobParts, { type: mimeType });
+    const objectUrl = URL.createObjectURL(blob);
+
+    clearCachedBookBlobUrl(book.id);
+    resolvedBlobUrlCache.set(cacheKey, objectUrl);
+    return objectUrl;
+  })();
+
+  inFlightBlobResolvers.set(cacheKey, task);
+  try {
+    return await task;
+  } finally {
+    inFlightBlobResolvers.delete(cacheKey);
+  }
 }
 
 function formatStorageUploadError(err: unknown, itemLabel: string): Error {
@@ -445,6 +664,61 @@ export async function updateUserProfileDetails(
   }
 }
 
+export async function updateDailyReadingGoal(uid: string, minutes: number): Promise<number> {
+  if (!BLUEPRINT_LIMITS.idPattern.test(uid)) {
+    throw new Error('Aqoonsiga isticmaalaha ma saxna.');
+  }
+
+  const parsed = Math.round(Number(minutes));
+  if (!Number.isFinite(parsed)) {
+    throw new Error('Fadlan geli tiro sax ah oo daqiiqo ah.');
+  }
+
+  const clamped = Math.min(
+    BLUEPRINT_LIMITS.user.dailyGoalMax,
+    Math.max(BLUEPRINT_LIMITS.user.dailyGoalMin, parsed)
+  );
+
+  const userPath = `users/${uid}`;
+  try {
+    await updateDoc(doc(db, 'users', uid), {
+      dailyReadingGoalMinutes: clamped,
+      updatedAt: serverTimestamp(),
+    });
+    return clamped;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, userPath);
+  }
+}
+
+export async function updateDailyReminderSettings(
+  uid: string,
+  enabled: boolean,
+  time: string
+): Promise<{ enabled: boolean; time: string }> {
+  if (!BLUEPRINT_LIMITS.idPattern.test(uid)) {
+    throw new Error('Aqoonsiga isticmaalaha ma saxna.');
+  }
+
+  const trimmedTime = (time || '').trim();
+  if (!BLUEPRINT_LIMITS.user.reminderTimePattern.test(trimmedTime)) {
+    throw new Error('Fadlan dooro saacad sax ah (tusaale: 20:00).');
+  }
+
+  const cleanEnabled = Boolean(enabled);
+  const userPath = `users/${uid}`;
+  try {
+    await updateDoc(doc(db, 'users', uid), {
+      dailyReminderEnabled: cleanEnabled,
+      dailyReminderTime: trimmedTime,
+      updatedAt: serverTimestamp(),
+    });
+    return { enabled: cleanEnabled, time: trimmedTime };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, userPath);
+  }
+}
+
 async function loadImageFromFile(file: File): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const objectUrl = URL.createObjectURL(file);
@@ -511,31 +785,25 @@ async function createCompactAvatarDataUrl(
   throw new Error('Sawirku aad buu u weyn yahay xitaa ka dib marka la yareeyay. Fadlan dooro sawir kale.');
 }
 
+function isSupportedImageFile(file: File): boolean {
+  if (file.type && file.type.startsWith('image/')) return true;
+  return /\.(png|jpe?g|webp|gif|bmp|avif|svg|heic|heif|tiff?)$/i.test(file.name);
+}
+
 async function createCompactCoverDataUrl(
   file: File,
   maxLength: number
 ): Promise<string | null> {
   try {
     const img = await loadImageFromFile(file);
-    const srcW = img.naturalWidth || img.width || 300;
-    const srcH = img.naturalHeight || img.height || 400;
+    const srcW = img.naturalWidth || img.width || 600;
+    const srcH = img.naturalHeight || img.height || 800;
     const targetAspect = 3 / 4;
     const srcAspect = srcW / srcH;
+    const isCloseToBookPortrait = srcAspect >= 0.56 && srcAspect <= 0.92;
 
-    let sx = 0;
-    let sy = 0;
-    let cropW = srcW;
-    let cropH = srcH;
-    if (srcAspect > targetAspect) {
-      cropW = Math.round(srcH * targetAspect);
-      sx = Math.max(0, Math.round((srcW - cropW) / 2));
-    } else if (srcAspect < targetAspect) {
-      cropH = Math.round(srcW / targetAspect);
-      sy = Math.max(0, Math.round((srcH - cropH) / 2));
-    }
-
-    const widths = [90, 72, 60, 48];
-    const qualities = [0.68, 0.52, 0.38, 0.25];
+    const widths = [600, 480, 360, 300, 240, 180, 144];
+    const qualities = [0.88, 0.80, 0.70, 0.58, 0.44];
 
     for (const w of widths) {
       const h = Math.round((w * 4) / 3);
@@ -544,11 +812,59 @@ async function createCompactCoverDataUrl(
       canvas.height = h;
       const ctx = canvas.getContext('2d');
       if (!ctx) return null;
-      ctx.fillStyle = '#F8F6F1';
+
+      ctx.fillStyle = '#1C1917';
       ctx.fillRect(0, 0, w, h);
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(img, sx, sy, cropW, cropH, 0, 0, w, h);
+
+      if (isCloseToBookPortrait) {
+        let sx = 0;
+        let sy = 0;
+        let cropW = srcW;
+        let cropH = srcH;
+        if (srcAspect > targetAspect) {
+          cropW = Math.round(srcH * targetAspect);
+          sx = Math.max(0, Math.round((srcW - cropW) / 2));
+        } else if (srcAspect < targetAspect) {
+          cropH = Math.round(srcW / targetAspect);
+          sy = Math.max(0, Math.round((srcH - cropH) / 2));
+        }
+        ctx.drawImage(img, sx, sy, cropW, cropH, 0, 0, w, h);
+      } else {
+        // Wide or square cover: blurred ambient cover backdrop + full uncropped cover centered
+        const bgScale = Math.max(w / srcW, h / srcH);
+        const bgW = srcW * bgScale;
+        const bgH = srcH * bgScale;
+        const bgX = (w - bgW) / 2;
+        const bgY = (h - bgH) / 2;
+
+        ctx.save();
+        if ('filter' in ctx) {
+          ctx.filter = 'blur(18px) brightness(0.55)';
+        }
+        ctx.drawImage(img, bgX, bgY, bgW, bgH);
+        ctx.restore();
+
+        ctx.fillStyle = 'rgba(17, 17, 16, 0.25)';
+        ctx.fillRect(0, 0, w, h);
+
+        const pad = Math.round(w * 0.05);
+        const availW = w - pad * 2;
+        const availH = h - pad * 2;
+        const fgScale = Math.min(availW / srcW, availH / srcH);
+        const fgW = Math.round(srcW * fgScale);
+        const fgH = Math.round(srcH * fgScale);
+        const fgX = Math.round((w - fgW) / 2);
+        const fgY = Math.round((h - fgH) / 2);
+
+        ctx.save();
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.45)';
+        ctx.shadowBlur = Math.round(w * 0.04);
+        ctx.shadowOffsetY = Math.round(w * 0.015);
+        ctx.drawImage(img, fgX, fgY, fgW, fgH);
+        ctx.restore();
+      }
 
       for (const mime of ['image/webp', 'image/jpeg']) {
         for (const quality of qualities) {
@@ -887,6 +1203,43 @@ export async function seedStarterBooksIfEmpty(adminUid: string): Promise<number>
   return seeded;
 }
 
+const LEGACY_STARTER_COVER_PATHS = new Set([
+  '/src/assets/images/cover_taariikhda_soomaaliya_1795275336344.jpg',
+  '/src/assets/images/cover_sayniska_xiddigiska_1795275336746.jpg',
+  '/src/assets/images/art_xiddigiska_dhaqanka_1795420923302.jpg',
+  '/src/assets/images/cover_suugaanta_soomaaliyeed_1795275336487.jpg',
+  '/src/assets/images/cover_tignoolajiyada_casriga_1795275335465.jpg',
+]);
+
+export async function upgradeStarterBookCovers(books: Book[]): Promise<void> {
+  const starterMap = new Map(STARTER_BOOKS.map((b) => [b.id, b.coverUrl]));
+  const targets = books.filter((b) => {
+    const nextCover = starterMap.get(b.id);
+    return Boolean(
+      nextCover &&
+        b.coverUrl !== nextCover &&
+        (!b.coverUrl || LEGACY_STARTER_COVER_PATHS.has(b.coverUrl))
+    );
+  });
+
+  if (targets.length === 0) return;
+
+  await Promise.all(
+    targets.map(async (book) => {
+      const nextCover = starterMap.get(book.id);
+      if (!nextCover) return;
+      try {
+        await updateDoc(doc(db, 'books', book.id), {
+          coverUrl: sanitizeString(nextCover, BLUEPRINT_LIMITS.book.urlMax),
+          updatedAt: serverTimestamp(),
+        });
+      } catch {
+        // Best-effort sync; BookCover also maps legacy URLs locally
+      }
+    })
+  );
+}
+
 export async function toggleFavoriteBook(
   uid: string,
   currentFavorites: string[],
@@ -933,21 +1286,63 @@ export interface CreateBookInput {
   onProgress?: (statusLabel: string) => void;
 }
 
-async function uploadBookAssetWithGitHubFirst(params: {
+async function uploadBookAssetWithCloudFirst(params: {
   folder: 'covers' | 'books';
   file: File;
-  storagePath: string;
   onStatus?: (label: string) => void;
   allowTextFallback?: boolean;
   hasExtractedText?: boolean;
-}): Promise<{ url: string; usedTextFallback: boolean }> {
-  const { folder, file, storagePath, onStatus, allowTextFallback, hasExtractedText } = params;
+}): Promise<{ url: string; usedTextFallback: boolean; useFirestoreChunks?: boolean }> {
+  const { folder, file, onStatus, allowTextFallback, hasExtractedText } = params;
   const isCover = folder === 'covers';
-  const itemLabel = isCover ? 'sawirka jaldiga' : 'faylka buugga';
 
-  const ghStatus = await fetchGitHubHostStatus();
+  const [sbStatus, ghStatus] = await Promise.all([
+    fetchSupabaseStorageStatus(),
+    fetchGitHubHostStatus(),
+  ]);
 
-  if (ghStatus.configured && auth.currentUser) {
+  // Optional Upgrade 1: Supabase Storage (when user configured keys)
+  if (sbStatus.configured && sbStatus.ready && auth.currentUser) {
+    onStatus?.(
+      isCover
+        ? 'Soo gelinaya jaldiga Supabase (0%)...'
+        : 'Soo gelinaya faylka buugga Supabase (0%)...'
+    );
+    try {
+      const idToken = await auth.currentUser.getIdToken();
+      const uploaded = await uploadFileToSupabaseStorage({
+        folder,
+        file,
+        idToken,
+        onProgress: (pct) => {
+          onStatus?.(
+            isCover
+              ? `Soo gelinaya jaldiga Supabase (${pct}%)...`
+              : `Soo gelinaya buugga Supabase (${pct}%)...`
+          );
+        },
+      });
+      return {
+        url: sanitizeString(
+          uploaded.publicUrl,
+          isCover ? BLUEPRINT_LIMITS.book.coverUrlMax : BLUEPRINT_LIMITS.book.urlMax
+        ),
+        usedTextFallback: false,
+      };
+    } catch (err) {
+      if (err instanceof SupabaseStorageUploadError) {
+        if (err.code === 'UNAUTHORIZED' || err.code === 'FORBIDDEN' || err.code === 'FILE_TOO_LARGE') {
+          if (allowTextFallback && hasExtractedText) {
+            return { url: '', usedTextFallback: true };
+          }
+          throw err;
+        }
+      }
+    }
+  }
+
+  // Optional Upgrade 2: GitHub Free Host (when write-verified)
+  if (ghStatus.configured && ghStatus.canWrite && auth.currentUser) {
     onStatus?.(
       isCover
         ? 'Soo gelinaya jaldiga GitHub (0%)...'
@@ -969,99 +1364,44 @@ async function uploadBookAssetWithGitHubFirst(params: {
         },
       });
       return {
-        url: sanitizeString(uploaded.cdnUrl, BLUEPRINT_LIMITS.book.urlMax),
+        url: sanitizeString(
+          uploaded.cdnUrl,
+          isCover ? BLUEPRINT_LIMITS.book.coverUrlMax : BLUEPRINT_LIMITS.book.urlMax
+        ),
         usedTextFallback: false,
       };
     } catch (err) {
       if (err instanceof GitHubHostUploadError) {
-        if (err.code === 'UNAUTHORIZED' || err.code === 'FORBIDDEN' || err.code === 'FILE_TOO_LARGE') {
+        if (err.code === 'UNAUTHORIZED' || err.code === 'FORBIDDEN') {
           if (allowTextFallback && hasExtractedText) {
             return { url: '', usedTextFallback: true };
           }
           throw err;
         }
-        if (err.code === 'UPLOAD_FAILED') {
-          if (allowTextFallback && hasExtractedText) {
-            return { url: '', usedTextFallback: true };
-          }
-          if (!isCover) {
-            throw err;
-          }
-        }
-        // GITHUB_NOT_CONFIGURED or SERVER_UNAVAILABLE -> continue to fallback path below
-      } else if (!isCover) {
-        if (allowTextFallback && hasExtractedText) {
-          return { url: '', usedTextFallback: true };
-        }
-        throw err;
       }
     }
   }
 
-  // Fast local fallbacks when GitHub direct upload isn't active yet
+  // Zero-Config Built-in Storage (Works immediately without any external setup!)
   if (isCover) {
-    if (!storageUnavailableInSession && ghStatus.reachable === false) {
-      try {
-        onStatus?.('Soo gelinaya jaldiga (0%)...');
-        const uploadedCover = await uploadFileWithProgress(storagePath, file, {
-          contentType: file.type || undefined,
-          stallTimeoutMs: STORAGE_COVER_TIMEOUT_MS,
-          itemLabel,
-          onProgress: (pct) => {
-            onStatus?.(`Soo gelinaya jaldiga (${pct}%)...`);
-          },
-        });
-        return {
-          url: sanitizeString(uploadedCover, BLUEPRINT_LIMITS.book.urlMax),
-          usedTextFallback: false,
-        };
-      } catch {
-        // Fall through to compact cover fallback
-      }
-    }
-
-    onStatus?.('Kaydinaya sawirka jaldiga...');
-    const compactCover = await createCompactCoverDataUrl(file, BLUEPRINT_LIMITS.book.urlMax);
+    onStatus?.('Habaynaya sawirka jaldiga HD...');
+    const compactCover = await createCompactCoverDataUrl(file, BLUEPRINT_LIMITS.book.coverUrlMax);
     if (compactCover) {
       return { url: compactCover, usedTextFallback: false };
     }
-    throw new Error(
-      'Sawirka jaldiga lama kaydin karin. Ku dar GITHUB_TOKEN qaybta Secrets / Netlify Env Vars ama geli link HTTPS toos ah.'
-    );
+    // If browser cannot decode image format (e.g. HEIC/TIFF), fall back cleanly to built-in Color + Frame + Icon hardcover
+    return { url: '', usedTextFallback: false };
   }
 
   if (allowTextFallback && hasExtractedText) {
     return { url: '', usedTextFallback: true };
   }
 
-  if (!ghStatus.configured) {
-    if (!storageUnavailableInSession) {
-      try {
-        onStatus?.('Soo gelinaya faylka buugga (0%)...');
-        const uploadedBookUrl = await uploadFileWithProgress(storagePath, file, {
-          contentType: file.type || undefined,
-          itemLabel,
-          onProgress: (pct) => {
-            onStatus?.(`Soo gelinaya faylka buugga (${pct}%)...`);
-          },
-        });
-        return {
-          url: sanitizeString(uploadedBookUrl, BLUEPRINT_LIMITS.book.urlMax),
-          usedTextFallback: false,
-        };
-      } catch {
-        // Fall through to clear GitHub token instruction below
-      }
-    }
-
-    throw new Error(
-      `Si faylasha PDF/EPUB toos loogu shubo GitHub markaad gujiso Kaydi, ku dar GITHUB_TOKEN qaybta Secrets / Netlify Environment Variables — ama faylka ku tuur GitHub (${getSavedGitHubHostRepo()}) kadibna ka dooro liiska GitHub Free Host.`
-    );
-  }
-
-  throw new Error(
-    `Faylka buugga lama soo gelin karin. Hubi in xisaabtaadu tahay Admin ama ka dooro liiska GitHub Free Host (${getSavedGitHubHostRepo()}).`
-  );
+  return {
+    url: '',
+    usedTextFallback: false,
+    useFirestoreChunks: true,
+  };
 }
 
 export async function createBookRecord(input: CreateBookInput): Promise<string> {
@@ -1079,11 +1419,11 @@ export async function createBookRecord(input: CreateBookInput): Promise<string> 
     throw new Error('Cinwaanka, qoraaga, iyo qaybta buugga waa lama huraan.');
   }
 
-  let coverUrl = validateOptionalHttpUrl(input.coverFallbackUrl, 'Link-ga sawirka jaldiga');
-  let fileUrl = validateOptionalHttpUrl(input.fileFallbackUrl, 'Link-ga faylka buugga');
+  let coverUrl = validateCoverUrlInput(input.coverFallbackUrl, 'Link-ga sawirka jaldiga');
+  let fileUrl = validateBookFileUrlInput(input.fileFallbackUrl, 'Link-ga faylka buugga');
 
   if (input.coverFile) {
-    if (!input.coverFile.type.startsWith('image/')) {
+    if (!isSupportedImageFile(input.coverFile)) {
       throw new Error('Sawirka jaldiga waa inuu noqdaa PNG, JPG, ama WebP.');
     }
     if (input.coverFile.size > MAX_COVER_FILE_BYTES) {
@@ -1098,11 +1438,9 @@ export async function createBookRecord(input: CreateBookInput): Promise<string> 
   const stamp = Date.now();
 
   if (input.coverFile) {
-    const safeCoverName = sanitizeFileName(input.coverFile.name);
-    const coverResult = await uploadBookAssetWithGitHubFirst({
+    const coverResult = await uploadBookAssetWithCloudFirst({
       folder: 'covers',
       file: input.coverFile,
-      storagePath: `covers/${stamp}_${safeCoverName}`,
       onStatus: input.onProgress,
     });
     coverUrl = coverResult.url;
@@ -1114,6 +1452,7 @@ export async function createBookRecord(input: CreateBookInput): Promise<string> 
     input.bookFile &&
       (input.bookFile.type.startsWith('text/') || /\.(txt|md|csv)$/i.test(input.bookFile.name))
   );
+  let uploadViaFirestoreChunks = false;
 
   if (input.bookFile) {
     fileName = sanitizeString(input.bookFile.name, BLUEPRINT_LIMITS.book.fileNameMax);
@@ -1125,16 +1464,24 @@ export async function createBookRecord(input: CreateBookInput): Promise<string> 
       }
     }
 
-    const safeBookName = sanitizeFileName(input.bookFile.name);
-    const bookResult = await uploadBookAssetWithGitHubFirst({
+    const bookResult = await uploadBookAssetWithCloudFirst({
       folder: 'books',
       file: input.bookFile,
-      storagePath: `books/${stamp}_${safeBookName}`,
       onStatus: input.onProgress,
       allowTextFallback: isTextBookFile,
       hasExtractedText: Boolean(extractedText.trim()),
     });
-    fileUrl = bookResult.usedTextFallback ? '' : bookResult.url;
+
+    if (bookResult.useFirestoreChunks) {
+      if (input.bookFile.size > MAX_FIRESTORE_CHUNKED_BOOK_BYTES) {
+        throw new Error(
+          'Faylka buuggu wuu ka weyn yahay 20 MB. Fadlan dooro PDF ka yar 20 MB ama geli Link HTTPS toos ah.'
+        );
+      }
+      uploadViaFirestoreChunks = true;
+    } else {
+      fileUrl = bookResult.usedTextFallback ? '' : bookResult.url;
+    }
   } else if (fileUrl) {
     const cleanUrlPart = fileUrl.split('?')[0].split('/').pop() || '';
     fileName = sanitizeString(
@@ -1151,17 +1498,22 @@ export async function createBookRecord(input: CreateBookInput): Promise<string> 
 
   input.onProgress?.('Kaydinaya buugga...');
 
+  const bookRef = doc(collection(db, 'books'));
+  const cloudFileUrl = uploadViaFirestoreChunks
+    ? `${MAKTABADA_CLOUD_SCHEME}${bookRef.id}?v=${stamp}`
+    : fileUrl;
+
   const payload = {
     title: cleanTitle,
     author: cleanAuthor,
     category: cleanCategory,
     description: sanitizeString(input.description, BLUEPRINT_LIMITS.book.descriptionMax),
     coverUrl,
-    fileUrl,
+    fileUrl: cloudFileUrl,
     fileName,
     fileType: input.fileType,
     allowDownload: Boolean(input.allowDownload),
-    published: true,
+    published: uploadViaFirestoreChunks ? false : true,
     contentText: sanitizeString(extractedText, BLUEPRINT_LIMITS.book.contentTextMax),
     createdBy: input.adminUid,
     ratingSum: 0,
@@ -1171,17 +1523,42 @@ export async function createBookRecord(input: CreateBookInput): Promise<string> 
   };
 
   try {
-    const docRef = await withTimeout(
-      addDoc(collection(db, 'books'), payload),
+    await withTimeout(
+      setDoc(bookRef, payload),
       FIRESTORE_WRITE_TIMEOUT_MS,
       'Kaydinta Firestore way daahday. Hubi internet-kaaga ama xisaabta Admin-ka.'
     );
-    return docRef.id;
+
+    if (uploadViaFirestoreChunks && input.bookFile) {
+      try {
+        await uploadBookFileChunksToFirestore({
+          bookId: bookRef.id,
+          adminUid: input.adminUid,
+          file: input.bookFile,
+          published: true,
+          stamp,
+          onStatus: input.onProgress,
+        });
+        await updateDoc(bookRef, {
+          published: true,
+          updatedAt: serverTimestamp(),
+        });
+      } catch (chunkErr) {
+        await deleteDoc(bookRef).catch(() => {});
+        throw chunkErr;
+      }
+    }
+
+    return bookRef.id;
   } catch (error) {
-    if (error instanceof Error && error.message.includes('Kaydinta Firestore way daahday')) {
+    if (
+      error instanceof Error &&
+      (error.message.includes('Kaydinta Firestore way daahday') ||
+        error.message.includes('Kaydinta faylka'))
+    ) {
       throw error;
     }
-    handleFirestoreError(error, OperationType.CREATE, 'books');
+    handleFirestoreError(error, OperationType.CREATE, `books/${bookRef.id}`);
   }
 }
 
@@ -1201,6 +1578,7 @@ export interface UpdateBookInput {
   fileFallbackUrl?: string;
   coverFile?: File | null;
   bookFile?: File | null;
+  adminUid?: string;
   onProgress?: (statusLabel: string) => void;
 }
 
@@ -1227,7 +1605,7 @@ export async function updateBookRecord(
   }
 
   if (input.coverFile) {
-    if (!input.coverFile.type.startsWith('image/')) {
+    if (!isSupportedImageFile(input.coverFile)) {
       throw new Error('Sawirka jaldiga waa inuu noqdaa PNG, JPG, ama WebP.');
     }
     if (input.coverFile.size > MAX_COVER_FILE_BYTES) {
@@ -1242,15 +1620,13 @@ export async function updateBookRecord(
   const stamp = Date.now();
   let coverUrl =
     input.coverFallbackUrl !== undefined
-      ? validateOptionalHttpUrl(input.coverFallbackUrl, 'Link-ga sawirka jaldiga')
-      : sanitizeString(input.existingCoverUrl || '', BLUEPRINT_LIMITS.book.urlMax);
+      ? validateCoverUrlInput(input.coverFallbackUrl, 'Link-ga sawirka jaldiga')
+      : sanitizeString(input.existingCoverUrl || '', BLUEPRINT_LIMITS.book.coverUrlMax);
 
   if (input.coverFile) {
-    const safeCoverName = sanitizeFileName(input.coverFile.name);
-    const coverResult = await uploadBookAssetWithGitHubFirst({
+    const coverResult = await uploadBookAssetWithCloudFirst({
       folder: 'covers',
       file: input.coverFile,
-      storagePath: `covers/${stamp}_${safeCoverName}`,
       onStatus: input.onProgress,
     });
     coverUrl = coverResult.url;
@@ -1258,12 +1634,12 @@ export async function updateBookRecord(
 
   let fileUrl =
     input.fileFallbackUrl !== undefined
-      ? validateOptionalHttpUrl(input.fileFallbackUrl, 'Link-ga faylka buugga')
+      ? validateBookFileUrlInput(input.fileFallbackUrl, 'Link-ga faylka buugga')
       : sanitizeString(input.existingFileUrl || '', BLUEPRINT_LIMITS.book.urlMax);
   let fileName = sanitizeString(input.existingFileName || '', BLUEPRINT_LIMITS.book.fileNameMax);
   if (fileUrl && !input.bookFile && input.fileFallbackUrl !== undefined && fileUrl !== input.existingFileUrl) {
     const cleanUrlPart = fileUrl.split('?')[0].split('/').pop() || '';
-    if (cleanUrlPart) {
+    if (cleanUrlPart && !isMaktabadaCloudFileUrl(fileUrl)) {
       fileName = sanitizeString(decodeURIComponent(cleanUrlPart), BLUEPRINT_LIMITS.book.fileNameMax);
     }
   }
@@ -1272,6 +1648,8 @@ export async function updateBookRecord(
     input.bookFile &&
       (input.bookFile.type.startsWith('text/') || /\.(txt|md|csv)$/i.test(input.bookFile.name))
   );
+
+  let uploadedChunkPrefix: string | undefined;
 
   if (input.bookFile) {
     fileName = sanitizeString(input.bookFile.name, BLUEPRINT_LIMITS.book.fileNameMax);
@@ -1283,16 +1661,34 @@ export async function updateBookRecord(
       }
     }
 
-    const safeBookName = sanitizeFileName(input.bookFile.name);
-    const bookResult = await uploadBookAssetWithGitHubFirst({
+    const bookResult = await uploadBookAssetWithCloudFirst({
       folder: 'books',
       file: input.bookFile,
-      storagePath: `books/${stamp}_${safeBookName}`,
       onStatus: input.onProgress,
       allowTextFallback: isTextBookFile,
       hasExtractedText: Boolean(contentText.trim()),
     });
-    if (!bookResult.usedTextFallback) {
+
+    if (bookResult.useFirestoreChunks) {
+      if (input.bookFile.size > MAX_FIRESTORE_CHUNKED_BOOK_BYTES) {
+        throw new Error(
+          'Faylka buuggu wuu ka weyn yahay 20 MB. Fadlan dooro PDF ka yar 20 MB ama geli Link HTTPS toos ah.'
+        );
+      }
+      const uploaderUid = input.adminUid || auth.currentUser?.uid || '';
+      if (!uploaderUid) {
+        throw new Error('Fadlan dib u soo gal xisaabtaada Admin-ka.');
+      }
+      fileUrl = await uploadBookFileChunksToFirestore({
+        bookId,
+        adminUid: uploaderUid,
+        file: input.bookFile,
+        published: Boolean(input.published),
+        stamp,
+        onStatus: input.onProgress,
+      });
+      uploadedChunkPrefix = `chunk_${stamp}_`;
+    } else if (!bookResult.usedTextFallback) {
       fileUrl = bookResult.url;
     }
   }
@@ -1319,8 +1715,33 @@ export async function updateBookRecord(
       FIRESTORE_WRITE_TIMEOUT_MS,
       'Kaydinta Firestore way daahday. Hubi internet-kaaga ama xisaabta Admin-ka.'
     );
+
+    if (uploadedChunkPrefix) {
+      clearCachedBookBlobUrl(bookId);
+      await deleteExistingBookFileChunks(bookId, uploadedChunkPrefix);
+    } else if (!isMaktabadaCloudFileUrl(fileUrl) && isMaktabadaCloudFileUrl(input.existingFileUrl)) {
+      clearCachedBookBlobUrl(bookId);
+      await deleteExistingBookFileChunks(bookId);
+    } else if (isMaktabadaCloudFileUrl(fileUrl)) {
+      // Keep fileChunks published state aligned when editing metadata
+      const snap = await getDocs(collection(db, 'books', bookId, 'fileChunks')).catch(() => null);
+      if (snap && !snap.empty) {
+        await Promise.all(
+          snap.docs.map((d) =>
+            updateDoc(d.ref, {
+              published: Boolean(input.published),
+              updatedAt: serverTimestamp(),
+            }).catch(() => {})
+          )
+        );
+      }
+    }
   } catch (error) {
-    if (error instanceof Error && error.message.includes('Kaydinta Firestore way daahday')) {
+    if (
+      error instanceof Error &&
+      (error.message.includes('Kaydinta Firestore way daahday') ||
+        error.message.includes('Kaydinta faylka'))
+    ) {
       throw error;
     }
     handleFirestoreError(error, OperationType.UPDATE, bookPath);
@@ -1337,6 +1758,17 @@ export async function toggleBookPublished(
       published,
       updatedAt: serverTimestamp(),
     });
+    const chunkSnap = await getDocs(collection(db, 'books', bookId, 'fileChunks')).catch(() => null);
+    if (chunkSnap && !chunkSnap.empty) {
+      await Promise.all(
+        chunkSnap.docs.map((d) =>
+          updateDoc(d.ref, {
+            published,
+            updatedAt: serverTimestamp(),
+          }).catch(() => {})
+        )
+      );
+    }
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, bookPath);
   }
@@ -1360,6 +1792,8 @@ export async function toggleBookDownloadable(
 export async function deleteBookRecord(bookId: string): Promise<void> {
   const bookPath = `books/${bookId}`;
   try {
+    await deleteExistingBookFileChunks(bookId);
+    clearCachedBookBlobUrl(bookId);
     await deleteDoc(doc(db, 'books', bookId));
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, bookPath);
@@ -1957,15 +2391,20 @@ export async function updateUserRole(uid: string, role: UserRole): Promise<void>
   }
 }
 
-export function triggerBookDownload(book: Book): void {
+export async function triggerBookDownload(book: Book, isAdmin = false): Promise<void> {
   if (!book.allowDownload) return;
 
   if (book.fileUrl) {
+    const resolvedHref = isMaktabadaCloudFileUrl(book.fileUrl)
+      ? await resolveBookFileUrl(book, isAdmin)
+      : normalizeGitHubAssetUrl(book.fileUrl);
     const link = document.createElement('a');
-    link.href = normalizeGitHubAssetUrl(book.fileUrl);
-    link.download = book.fileName || `${book.title}.pdf`;
-    link.target = '_blank';
-    link.rel = 'noopener noreferrer';
+    link.href = resolvedHref;
+    link.download = book.fileName || `${book.title}.${book.fileType || 'pdf'}`;
+    if (!resolvedHref.startsWith('blob:') && !resolvedHref.startsWith('data:')) {
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+    }
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);

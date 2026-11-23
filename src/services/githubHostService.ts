@@ -167,6 +167,8 @@ export function formatBytesCompact(bytes: number): string {
 
 export interface GitHubUploadStatus {
   configured: boolean;
+  canWrite: boolean;
+  tokenError: string;
   repo: string;
   reachable: boolean;
 }
@@ -207,6 +209,8 @@ export async function fetchGitHubHostStatus(forceRefresh = false): Promise<GitHu
 
   const fallback: GitHubUploadStatus = {
     configured: false,
+    canWrite: false,
+    tokenError: '',
     repo: getSavedGitHubHostRepo(),
     reachable: false,
   };
@@ -224,9 +228,16 @@ export async function fetchGitHubHostStatus(forceRefresh = false): Promise<GitHu
       if (!res.ok || !contentType.includes('application/json')) {
         return fallback;
       }
-      const data = (await res.json()) as { configured?: unknown; repo?: unknown };
+      const data = (await res.json()) as {
+        configured?: unknown;
+        canWrite?: unknown;
+        tokenError?: unknown;
+        repo?: unknown;
+      };
       const value: GitHubUploadStatus = {
         configured: Boolean(data.configured),
+        canWrite: data.canWrite === undefined ? Boolean(data.configured) : Boolean(data.canWrite),
+        tokenError: typeof data.tokenError === 'string' ? data.tokenError : '',
         repo: typeof data.repo === 'string' && data.repo.trim() ? data.repo.trim() : fallback.repo,
         reachable: true,
       };

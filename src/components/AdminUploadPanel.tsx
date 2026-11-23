@@ -1,9 +1,14 @@
 import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
-import { Upload, CheckCircle2, Image as ImageIcon, FileText, X, FolderGit2, Loader2 } from 'lucide-react';
+import { Upload, CheckCircle2, Image as ImageIcon, FileText, X, FolderGit2, Loader2, Database } from 'lucide-react';
 import { fetchGitHubHostStatus, type GitHubUploadStatus } from '../services/githubHostService';
+import {
+  fetchSupabaseStorageStatus,
+  type SupabaseStorageStatus,
+} from '../services/supabaseStorageService';
 import { createBookRecord, extractErrorMessage } from '../services/libraryService';
 import { BLUEPRINT_LIMITS, type BookFileType } from '../types';
 import { BookCover } from './BookCover';
+import { CoverStyleDesigner } from './CoverStyleDesigner';
 import { GitHubHostPicker } from './GitHubHostPicker';
 
 interface AdminUploadPanelProps {
@@ -37,7 +42,7 @@ export function AdminUploadPanel({
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [coverPreviewUrl, setCoverPreviewUrl] = useState('');
   const [bookFile, setBookFile] = useState<File | null>(null);
-  const [showExternalUrls, setShowExternalUrls] = useState(true);
+  const [showExternalUrls, setShowExternalUrls] = useState(false);
   const [coverFallbackUrl, setCoverFallbackUrl] = useState('');
   const [fileFallbackUrl, setFileFallbackUrl] = useState('');
 
@@ -46,16 +51,24 @@ export function AdminUploadPanel({
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
   const [ghStatus, setGhStatus] = useState<GitHubUploadStatus | null>(null);
+  const [sbStatus, setSbStatus] = useState<SupabaseStorageStatus | null>(null);
 
   useEffect(() => {
     let active = true;
-    fetchGitHubHostStatus().then((status) => {
-      if (active) setGhStatus(status);
-    });
+    Promise.all([fetchSupabaseStorageStatus(), fetchGitHubHostStatus()]).then(
+      ([supabase, github]) => {
+        if (!active) return;
+        setSbStatus(supabase);
+        setGhStatus(github);
+      }
+    );
     return () => {
       active = false;
     };
   }, []);
+
+  const supabaseReady = Boolean(sbStatus?.configured && sbStatus?.ready);
+  const githubReady = Boolean(ghStatus?.configured && ghStatus?.canWrite);
 
   useEffect(() => {
     if (!coverFile) {
@@ -302,8 +315,8 @@ export function AdminUploadPanel({
                 <FolderGit2 className="w-3.5 h-3.5" />
                 <span>
                   {showExternalUrls
-                    ? 'Qari GitHub Free Host / Link-yada Tooska ah'
-                    : 'Fur GitHub Free Host (0$) ama Link Toos ah'}
+                    ? 'Qari Link-yada Tooska ah / GitHub'
+                    : 'Geli Link HTTPS Toos ah ama GitHub (Ikhtiyaari)'}
                 </span>
               </button>
             </div>
@@ -331,15 +344,30 @@ export function AdminUploadPanel({
               />
             )}
 
+            <div className="p-3 rounded-lg border text-xs leading-relaxed flex items-start gap-2.5 bg-[#F0FDF4] dark:bg-[#14532D]/20 border-[#BBF7D0] dark:border-[#166534] text-[#14532D] dark:text-[#4ADE80]">
+              <Database className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>
+                {supabaseReady
+                  ? `Supabase Storage waa diyaar (bucket: ${sbStatus?.bucket || 'maktabada'}): PDF/EPUB ilaa 50 MB iyo sawirrada jaldiga HD toos ayay ugu kaydsamayaan.`
+                  : githubReady
+                  ? `GitHub Direct Upload waa diyaar (${ghStatus?.repo}): faylashaadu toos ayay ugu kaydsamayaan GitHub.`
+                  : 'Kaydka Tooska ah ee Maktabadda waa diyaar: PDF/EPUB (ilaa 20 MB) iyo sawirrada jaldiga HD-ga ah toos ayay u kaydsamayaan adigoon wax kale ku xirin.'}
+              </span>
+            </div>
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
               <div className="relative">
                 <label className="block border border-dashed border-[#D6CEBE] dark:border-[#383531] rounded-xl p-4 pr-9 bg-[#F8F6F1]/70 dark:bg-[#141312] hover:bg-[#EFECE5]/60 dark:hover:bg-[#242320] transition-colors cursor-pointer">
                   <div className="flex items-center gap-2.5 text-xs font-medium text-[#1C1917] dark:text-[#F5F2EB] mb-1">
                     <ImageIcon className="w-4 h-4 text-[#14532D] dark:text-[#4ADE80]" />
-                    <span>Sawirka Jaldiga (Device)</span>
+                    <span>Sawirka Jaldiga HD (Device)</span>
                   </div>
                   <p className="text-xs text-[#78716C] dark:text-[#A8A29E] truncate">
-                    {coverFile ? coverFile.name : 'Dooro PNG / JPG (toos ayuu u kaydsamayaa)'}
+                    {coverFile
+                      ? coverFile.name
+                      : supabaseReady
+                      ? 'Dooro PNG / JPG (toos Supabase HD ayuu u galayaa)'
+                      : 'Dooro PNG / JPG / WebP (toos ayuu HD ugu kaydsamayaa)'}
                   </p>
                   <input
                     type="file"
@@ -371,17 +399,21 @@ export function AdminUploadPanel({
                   <div className="flex items-center gap-2.5 text-xs font-medium text-[#1C1917] dark:text-[#F5F2EB] mb-1">
                     <FileText className="w-4 h-4 text-[#14532D] dark:text-[#4ADE80]" />
                     <span>
-                      {ghStatus?.configured
+                      {supabaseReady
+                        ? 'Faylka Buugga (Supabase 50 MB)'
+                        : githubReady
                         ? 'Faylka Buugga (GitHub Upload)'
-                        : 'Faylka Buugga (TXT / GitHub)'}
+                        : 'Faylka Buugga (PDF / EPUB / TXT)'}
                     </span>
                   </div>
                   <p className="text-xs text-[#78716C] dark:text-[#A8A29E] truncate">
                     {bookFile
                       ? bookFile.name
-                      : ghStatus?.configured
+                      : supabaseReady
+                      ? 'Dooro PDF, EPUB ama TXT (ilaa 50 MB · Supabase)'
+                      : githubReady
                       ? 'Dooro PDF, EPUB ama TXT (toos GitHub ayuu u galayaa)'
-                      : 'TXT toos buu u galayaa · PDF/EPUB ku dar GITHUB_TOKEN ama GitHub'}
+                      : 'Dooro PDF, EPUB ama TXT (ilaa 20 MB toos buu u galayaa)'}
                   </p>
                   <input
                     type="file"
@@ -405,11 +437,24 @@ export function AdminUploadPanel({
             </div>
             {bookFile && !/\.(txt|md|csv)$/i.test(bookFile.name) && (
               <p className="text-xs text-[#57534E] dark:text-[#A8A29E] leading-relaxed">
-                {ghStatus?.configured
-                  ? `Faylkan si toos ah ayaa loogu shubayaa GitHub (${ghStatus.repo}) markaad gujiso Kaydi. (Fiiro: haddii aad ku jirto Netlify, xadka tooska ah ee function-ku waa ~4.5 MB.)`
-                  : 'Fiiro gaar ah: Si faylasha PDF/EPUB ee Device-ka toos loogu shubo GitHub markaad gujiso Kaydi, ku dar GITHUB_TOKEN qaybta Secrets / Netlify Env Vars — ama ku tuur GitHub repo-ga kadibna ka dooro qaybta sare.'}
+                {supabaseReady
+                  ? `Faylkan si toos ah ayaa loogu shubayaa Supabase Storage (${sbStatus?.bucket || 'maktabada'}) markaad gujiso Kaydi.`
+                  : githubReady
+                  ? `Faylkan si toos ah ayaa loogu shubayaa GitHub (${ghStatus?.repo}) markaad gujiso Kaydi.`
+                  : 'Faylkan PDF/EPUB si toos ah ayaa loogu kaydinayaa Maktabadda Cloud (Firestore) markaad gujiso Kaydi.'}
               </p>
             )}
+
+            <CoverStyleDesigner
+              coverUrl={coverFallbackUrl}
+              title={title}
+              category={activeCategory}
+              disabled={submitting}
+              onSelectCustomCover={(nextUrl) => {
+                setCoverFile(null);
+                setCoverFallbackUrl(nextUrl);
+              }}
+            />
           </div>
 
           <div>
@@ -469,6 +514,27 @@ export function AdminUploadPanel({
               author={author || 'Magaca Qoraaga'}
               category={activeCategory}
             />
+            {(coverFile || coverFallbackUrl.trim()) && !submitting ? (
+              <div className="px-4 py-2 bg-[#F8F6F1] dark:bg-[#161514] border-b border-[#EFECE5] dark:border-[#2E2C29] flex items-center justify-between gap-2 text-xs">
+                <span className="text-[#14532D] dark:text-[#4ADE80] font-medium truncate">
+                  {coverFile ? coverFile.name : 'Link jaldi ah'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCoverFile(null);
+                    setCoverFallbackUrl('');
+                  }}
+                  className="text-[#991B1B] dark:text-[#FCA5A5] hover:underline shrink-0"
+                >
+                  Ka saar
+                </button>
+              </div>
+            ) : (
+              <div className="px-4 py-2 bg-[#F8F6F1] dark:bg-[#161514] border-b border-[#EFECE5] dark:border-[#2E2C29] text-[11px] text-[#78716C] dark:text-[#A8A29E]">
+                Jaldi midab, frame iyo icon leh oo la socda qaybta &quot;{activeCategory}&quot;.
+              </div>
+            )}
             <div className="p-5">
               <div className="flex items-center gap-2 text-xs text-[#78716C] dark:text-[#A8A29E] mb-2 truncate">
                 <span className="font-medium text-[#14532D] dark:text-[#4ADE80]">{activeCategory}</span>

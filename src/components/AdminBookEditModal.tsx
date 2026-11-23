@@ -1,11 +1,19 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { FileText, FolderGit2, Image as ImageIcon, Loader2, Save, X } from 'lucide-react';
+import { Database, FileText, FolderGit2, Image as ImageIcon, Loader2, Save, X } from 'lucide-react';
+import { fetchGitHubHostStatus, type GitHubUploadStatus } from '../services/githubHostService';
+import {
+  fetchSupabaseStorageStatus,
+  type SupabaseStorageStatus,
+} from '../services/supabaseStorageService';
 import { extractErrorMessage, updateBookRecord } from '../services/libraryService';
 import { BLUEPRINT_LIMITS, type Book, type BookFileType } from '../types';
+import { BookCover } from './BookCover';
+import { CoverStyleDesigner } from './CoverStyleDesigner';
 import { GitHubHostPicker } from './GitHubHostPicker';
 
 interface AdminBookEditModalProps {
   book: Book | null;
+  adminUid?: string;
   existingCategories: string[];
   onClose: () => void;
   onSaved: (msg: string) => void;
@@ -15,6 +23,7 @@ const DEFAULT_CATEGORIES = ['Taariikh', 'Saynis', 'Suugaan', 'Tignoolajiyada', '
 
 export function AdminBookEditModal({
   book,
+  adminUid,
   existingCategories,
   onClose,
   onSaved,
@@ -32,6 +41,7 @@ export function AdminBookEditModal({
   const [published, setPublished] = useState(Boolean(book?.published));
   const [contentText, setContentText] = useState(book?.contentText || '');
   const [coverFile, setCoverFile] = useState<File | null>(null);
+  const [coverPreviewUrl, setCoverPreviewUrl] = useState('');
   const [bookFile, setBookFile] = useState<File | null>(null);
   const [coverUrlInput, setCoverUrlInput] = useState(book?.coverUrl || '');
   const [fileUrlInput, setFileUrlInput] = useState(book?.fileUrl || '');
@@ -39,6 +49,18 @@ export function AdminBookEditModal({
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  const [sbStatus, setSbStatus] = useState<SupabaseStorageStatus | null>(null);
+  const [ghStatus, setGhStatus] = useState<GitHubUploadStatus | null>(null);
+
+  useEffect(() => {
+    if (!coverFile) {
+      setCoverPreviewUrl('');
+      return;
+    }
+    const url = URL.createObjectURL(coverFile);
+    setCoverPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [coverFile]);
 
   useEffect(() => {
     if (!book) return;
@@ -55,7 +77,22 @@ export function AdminBookEditModal({
     setCoverUrlInput(book.coverUrl || '');
     setFileUrlInput(book.fileUrl || '');
     setErrorMsg('');
+
+    let active = true;
+    Promise.all([fetchSupabaseStorageStatus(), fetchGitHubHostStatus()]).then(
+      ([supabase, github]) => {
+        if (!active) return;
+        setSbStatus(supabase);
+        setGhStatus(github);
+      }
+    );
+    return () => {
+      active = false;
+    };
   }, [book]);
+
+  const supabaseReady = Boolean(sbStatus?.configured && sbStatus?.ready);
+  const githubReady = Boolean(ghStatus?.configured && ghStatus?.canWrite);
 
   useEffect(() => {
     if (!book) return;
@@ -96,6 +133,7 @@ export function AdminBookEditModal({
         fileFallbackUrl: fileUrlInput,
         coverFile,
         bookFile,
+        adminUid,
         onProgress: (status) => setSaveStatus(status),
       });
       onSaved(`Buugga "${title.trim()}" waa la cusboonaysiiyay.`);
@@ -242,39 +280,98 @@ export function AdminBookEditModal({
             />
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="relative">
-              <label className="block border border-dashed border-[#D6CEBE] dark:border-[#383531] rounded-xl p-3.5 pr-9 bg-[#F8F6F1]/70 dark:bg-[#141312] hover:bg-[#EFECE5]/60 dark:hover:bg-[#242320] transition-colors cursor-pointer">
-                <div className="flex items-center gap-2 text-xs font-medium text-[#1C1917] dark:text-[#F5F2EB] mb-1">
-                  <ImageIcon className="w-3.5 h-3.5 text-[#14532D] dark:text-[#4ADE80]" />
-                  <span>Beddel Sawirka Jaldiga (Ikhtiyaari)</span>
+          <div className="p-3 rounded-lg border text-xs leading-relaxed flex items-start gap-2 bg-[#F0FDF4] dark:bg-[#14532D]/20 border-[#BBF7D0] dark:border-[#166534] text-[#14532D] dark:text-[#4ADE80]">
+            <Database className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+            <span>
+              {supabaseReady
+                ? `Supabase Storage waa diyaar (${sbStatus?.bucket || 'maktabada'}): PDF/EPUB ilaa 50 MB & sawirrada HD toos ayay u kaydsamayaan.`
+                : githubReady
+                ? `GitHub Direct Upload waa diyaar (${ghStatus?.repo}).`
+                : 'Kaydka Tooska ah ee Maktabadda waa diyaar: PDF/EPUB (ilaa 20 MB) iyo sawirrada jaldiga HD toos ayay u kaydsamayaan.'}
+            </span>
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-4 items-start p-3.5 rounded-xl bg-[#F8F6F1]/70 dark:bg-[#141312] border border-[#E5E0D5] dark:border-[#2E2C29]">
+            <div className="w-20 shrink-0 rounded-lg overflow-hidden border border-[#E5E0D5] dark:border-[#2E2C29]">
+              <BookCover
+                src={coverPreviewUrl || coverUrlInput.trim()}
+                title={title || book.title}
+                author={author || book.author}
+                category={category}
+                size="xs"
+              />
+            </div>
+
+            <div className="flex-1 w-full grid grid-cols-1 gap-3">
+              <div className="relative">
+                <label className="block border border-dashed border-[#D6CEBE] dark:border-[#383531] rounded-xl p-3.5 pr-9 bg-white dark:bg-[#1C1B19] hover:bg-[#EFECE5]/60 dark:hover:bg-[#242320] transition-colors cursor-pointer">
+                  <div className="flex items-center gap-2 text-xs font-medium text-[#1C1917] dark:text-[#F5F2EB] mb-1">
+                    <ImageIcon className="w-3.5 h-3.5 text-[#14532D] dark:text-[#4ADE80]" />
+                    <span>Beddel Sawirka Jaldiga (HD)</span>
+                  </div>
+                  <p className="text-xs text-[#78716C] dark:text-[#A8A29E] truncate">
+                    {coverFile
+                      ? coverFile.name
+                      : coverUrlInput.trim()
+                      ? 'Sawir jaldi wuu ku xiran yahay — guji si aad mid cusub u doorato'
+                      : 'Jaldi toos ah ayaa loo isticmaalayaa — ama dooro sawir cusub'}
+                  </p>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0] || null;
+                      e.target.value = '';
+                      setCoverFile(file);
+                    }}
+                    className="sr-only"
+                  />
+                </label>
+                {coverFile && !saving && (
+                  <button
+                    type="button"
+                    onClick={() => setCoverFile(null)}
+                    aria-label="Ka saar sawirka cusub"
+                    title="Ka saar sawirka"
+                    className="absolute top-2.5 right-2.5 p-1 rounded-md text-[#78716C] hover:text-[#1C1917] dark:text-[#A8A29E] dark:hover:text-[#F5F2EB] hover:bg-[#EFECE5] dark:hover:bg-[#292724]"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+
+              {(coverFile || coverUrlInput.trim()) && !saving && (
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <span className="text-[#78716C] dark:text-[#A8A29E]">
+                    {coverFile ? 'Sawir cusub waa diyaar' : 'Muujinta jaldiga hadda jira'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCoverFile(null);
+                      setCoverUrlInput('');
+                    }}
+                    className="text-[#991B1B] dark:text-[#FCA5A5] hover:underline font-medium"
+                  >
+                    Ka saar sawirka (isticmaal jaldiga qoraalka)
+                  </button>
                 </div>
-                <p className="text-xs text-[#78716C] dark:text-[#A8A29E] truncate">
-                  {coverFile ? coverFile.name : book.coverUrl ? 'Sawir hore wuu jiraa' : 'Dooro sawir cusub'}
-                </p>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0] || null;
-                    e.target.value = '';
-                    setCoverFile(file);
-                  }}
-                  className="sr-only"
-                />
-              </label>
-              {coverFile && !saving && (
-                <button
-                  type="button"
-                  onClick={() => setCoverFile(null)}
-                  aria-label="Ka saar sawirka cusub"
-                  title="Ka saar sawirka"
-                  className="absolute top-2.5 right-2.5 p-1 rounded-md text-[#78716C] hover:text-[#1C1917] dark:text-[#A8A29E] dark:hover:text-[#F5F2EB] hover:bg-[#EFECE5] dark:hover:bg-[#292724]"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
               )}
             </div>
+          </div>
+
+          <CoverStyleDesigner
+            coverUrl={coverUrlInput}
+            title={title || book.title}
+            category={category}
+            disabled={saving}
+            onSelectCustomCover={(nextUrl) => {
+              setCoverFile(null);
+              setCoverUrlInput(nextUrl);
+            }}
+          />
+
+          <div className="grid grid-cols-1 gap-4">
 
             <div className="relative">
               <label className="block border border-dashed border-[#D6CEBE] dark:border-[#383531] rounded-xl p-3.5 pr-9 bg-[#F8F6F1]/70 dark:bg-[#141312] hover:bg-[#EFECE5]/60 dark:hover:bg-[#242320] transition-colors cursor-pointer">

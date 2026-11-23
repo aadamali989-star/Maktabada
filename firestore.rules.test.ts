@@ -193,4 +193,20 @@ export const dirtyDozenPayloads = [
     payload: { userId: 'user_123', dateKey: '2026-11-22', secondsRead: 999999 },
     expected: 'PERMISSION_DENIED',
   },
+  {
+    name: '22_unauthorized_book_file_chunk_write',
+    path: '/books/book_1/fileChunks/chunk_0',
+    operation: 'create',
+    auth: { uid: 'user_123', email: 'reader@example.com', email_verified: true },
+    payload: {
+      bookId: 'book_1',
+      index: 0,
+      totalChunks: 1,
+      mimeType: 'application/pdf',
+      dataBase64: 'JVBERi0xLjQ=',
+      published: true,
+      createdBy: 'user_123',
+    },
+    expected: 'PERMISSION_DENIED',
+  },
 ];

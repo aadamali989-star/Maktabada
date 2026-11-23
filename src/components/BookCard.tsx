@@ -1,9 +1,11 @@
+import { useState } from 'react';
 import {
   BookOpen,
   Check,
   Download,
   HardDriveDownload,
   Heart,
+  Loader2,
   Lock,
   MessageSquare,
   Trash2,
@@ -17,6 +19,7 @@ interface BookCardProps {
   book: Book;
   isFavorite: boolean;
   isAdmin: boolean;
+  preferStyledCover?: boolean;
   isOfflineSaved?: boolean;
   offlineBusy?: boolean;
   isOnline?: boolean;
@@ -37,6 +40,7 @@ export function BookCard({
   book,
   isFavorite,
   isAdmin,
+  preferStyledCover = false,
   isOfflineSaved = false,
   offlineBusy = false,
   isOnline = true,
@@ -52,6 +56,7 @@ export function BookCard({
   onDelete,
   onToggleDownloadable,
 }: BookCardProps) {
+  const [downloading, setDownloading] = useState(false);
   const hasProgress = Boolean(progress && (progress.percentage > 0 || progress.currentPage > 1));
   const pct = progress?.percentage ?? 0;
 
@@ -68,13 +73,14 @@ export function BookCard({
       <button
         type="button"
         onClick={() => onRead(book)}
-        className="text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-[#14532D] relative"
+        className="w-full block text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-[#14532D] relative"
       >
         <BookCover
           src={book.coverUrl}
           title={book.title}
           author={book.author}
           category={book.category}
+          preferStyledFallback={preferStyledCover}
         />
         {hasProgress && (
           <div className="h-1 w-full bg-[#E5E0D5] dark:bg-[#2E2C29]" aria-hidden="true">
@@ -189,12 +195,26 @@ export function BookCard({
 
                 <button
                   type="button"
-                  onClick={() => triggerBookDownload(book)}
+                  disabled={downloading}
+                  onClick={() => {
+                    setDownloading(true);
+                    void triggerBookDownload(book, isAdmin)
+                      .catch(() => {
+                        // Download error handled gracefully without unhandled rejection
+                      })
+                      .finally(() => {
+                        setDownloading(false);
+                      });
+                  }}
                   aria-label="Soo Deji Faylka"
                   title="Soo Deji Faylka (Download)"
-                  className="p-2 text-xs font-medium border border-[#D6CEBE] dark:border-[#383531] text-[#57534E] dark:text-[#A8A29E] hover:text-[#1C1917] dark:hover:text-[#F5F2EB] rounded-lg hover:bg-[#F8F6F1] dark:hover:bg-[#292724] transition-colors shrink-0"
+                  className="p-2 text-xs font-medium border border-[#D6CEBE] dark:border-[#383531] text-[#57534E] dark:text-[#A8A29E] hover:text-[#1C1917] dark:hover:text-[#F5F2EB] rounded-lg hover:bg-[#F8F6F1] dark:hover:bg-[#292724] transition-colors shrink-0 disabled:opacity-60"
                 >
-                  <Download className="w-3.5 h-3.5" />
+                  {downloading ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Download className="w-3.5 h-3.5" />
+                  )}
                 </button>
               </>
             ) : (

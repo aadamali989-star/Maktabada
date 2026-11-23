@@ -21,6 +21,22 @@ function sanitizeFileName(name) {
   return (cleaned || 'file').slice(0, 120);
 }
 
+function normalizeSecretValue(raw) {
+  let val = String(raw || '').trim();
+  if (!val) return '';
+  if (
+    (val.startsWith('"') && val.endsWith('"')) ||
+    (val.startsWith("'") && val.endsWith("'"))
+  ) {
+    val = val.slice(1, -1).trim();
+  }
+  val = val.replace(/^GITHUB_TOKEN\s*=\s*/i, '').trim();
+  if (/^Bearer\s+/i.test(val)) {
+    val = val.replace(/^Bearer\s+/i, '').trim();
+  }
+  return val;
+}
+
 function parseRepoSlug(raw) {
   const cleaned = String(raw || '')
     .trim()
@@ -90,11 +106,54 @@ export default async function handler(req) {
   const url = new URL(req.url);
 
   if (req.method === 'GET' && url.pathname.endsWith('/status')) {
-    const token = (process.env.GITHUB_TOKEN || '').trim();
+    const token = normalizeSecretValue(process.env.GITHUB_TOKEN);
     const { owner, repo } = parseRepoSlug(process.env.GITHUB_HOST_REPO || DEFAULT_GITHUB_REPO);
+    const repoSlug = `${owner}/${repo}`;
+
+    if (!token) {
+      return jsonResponse({
+        configured: false,
+        canWrite: false,
+        tokenError: '',
+        repo: repoSlug,
+      });
+    }
+
+    let canWrite = true;
+    let tokenError = '';
+    try {
+      const repoRes = await fetch(
+        `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+        {
+          headers: {
+            Accept: 'application/vnd.github+json',
+            Authorization: `Bearer ${token}`,
+            'User-Agent': 'maktabada-so-uploader',
+          },
+        }
+      );
+      if (!repoRes.ok) {
+        canWrite = false;
+        tokenError =
+          repoRes.status === 401
+            ? 'GITHUB_TOKEN waa khaldan yahay ama wuu dhacay (HTTP 401).'
+            : `GitHub repo (${repoSlug}) lama gaari karin (HTTP ${repoRes.status}).`;
+      } else {
+        const repoData = await repoRes.json();
+        if (repoData?.permissions && repoData.permissions.push === false) {
+          canWrite = false;
+          tokenError = 'GITHUB_TOKEN ma laha awoodda Contents: Read and write.';
+        }
+      }
+    } catch {
+      // Transient network error; allow upload attempt
+    }
+
     return jsonResponse({
-      configured: Boolean(token),
-      repo: `${owner}/${repo}`,
+      configured: true,
+      canWrite,
+      tokenError,
+      repo: repoSlug,
     });
   }
 
@@ -103,7 +162,7 @@ export default async function handler(req) {
   }
 
   try {
-    const token = (process.env.GITHUB_TOKEN || '').trim();
+    const token = normalizeSecretValue(process.env.GITHUB_TOKEN);
     if (!token) {
       return jsonResponse(
         {

@@ -8,7 +8,7 @@ export const STARTER_BOOKS: Book[] = [
     category: 'Taariikh',
     description:
       'Daraasad qoto dheer oo ku saabsan magaalo-xeebeedyadii qadiimiga ahaa ee Saylac, Muqdisho, Berbera iyo Baraawe, iyo xiriirkii ganacsi ee Badweynta Hindiya.',
-    coverUrl: '/src/assets/images/cover_taariikhda_soomaaliya_1795275336344.jpg',
+    coverUrl: '/src/assets/images/art_taariikhda_geeska_1795420922526.jpg',
     fileUrl: '',
     fileName: 'taariikhda-ilbaxnimada-geeska-afrika.txt',
     fileType: 'article',
@@ -39,7 +39,7 @@ Maanta, barashada taariikhdaasi waxay ina tusaysaa muhiimadda ay leedahay in aqo
     category: 'Saynis',
     description:
       'Sida aqoonyahannada Soomaaliyeed u akhrin jireen xiddigaha, xilliyada roobka (Gu, Deyr, Xagaa, Jiilaal), iyo xisaabinta kalandarka dayaxa iyo qorraxda.',
-    coverUrl: '/src/assets/images/cover_sayniska_xiddigiska_1795275336746.jpg',
+    coverUrl: '/src/assets/images/art_xiddigiska_soomaali_1795427946263.jpg',
     fileUrl: '',
     fileName: 'xiddigiska-iyo-cilmiga-cirka.txt',
     fileType: 'article',
@@ -68,7 +68,7 @@ Habka Dab-shidka (Nayruuska Soomaalida) wuxuu ku salaysan yahay wareegga qorraxd
     category: 'Suugaan',
     description:
       'Ururin suugaan iyo falanqayn ku saabsan gabayga, jiiftada, geeraarka iyo hal-abuurka Af-Soomaaliga ee qarnigii 20aad iyo 21aad.',
-    coverUrl: '/src/assets/images/cover_suugaanta_soomaaliyeed_1795275336487.jpg',
+    coverUrl: '/src/assets/images/art_suugaanta_maansada_1795420923125.jpg',
     fileUrl: '',
     fileName: 'diwaanka-maansada-soomaaliyeed.txt',
     fileType: 'article',
@@ -97,7 +97,7 @@ Buuggan waxaa loo diyaariyay qaabka Akhris Kaliya ee gudaha maktabadda ah si loo
     category: 'Tignoolajiyada',
     description:
       'Hage Af-Soomaali ah oo sharxaya qaab-dhismeedka barnaamijyada webka, kaydinta xogta (Cloud Databases), ammaanka internetka, iyo dhisidda adeegyo la isku hallayn karo.',
-    coverUrl: '/src/assets/images/cover_tignoolajiyada_casriga_1795275335465.jpg',
+    coverUrl: '/src/assets/images/art_tignoolajiyada_webka_1795420923395.jpg',
     fileUrl: '',
     fileName: 'aasaaska-software-engineering.txt',
     fileType: 'article',

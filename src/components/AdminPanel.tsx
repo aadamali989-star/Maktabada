@@ -497,6 +497,7 @@ export function AdminPanel({
                                   title={book.title}
                                   author={book.author}
                                   category={book.category}
+                                  size="xs"
                                   className="rounded"
                                 />
                               </div>
@@ -841,6 +842,7 @@ export function AdminPanel({
       <AdminBookEditModal
         key={editingBook?.id || 'closed'}
         book={editingBook}
+        adminUid={adminUid}
         existingCategories={existingCategories}
         onClose={() => setEditingBook(null)}
         onSaved={onNotify}

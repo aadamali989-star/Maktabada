@@ -50,7 +50,7 @@ service cloud.firestore {
         ])
         && data.keys().hasOnly([
           'uid', 'name', 'email', 'role', 'favorites', 'online', 'lastSeen', 'createdAt', 'updatedAt',
-          'bio', 'avatarUrl'
+          'bio', 'avatarUrl', 'dailyReadingGoalMinutes', 'dailyReminderEnabled', 'dailyReminderTime'
         ])
         && isValidId(data.uid)
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
@@ -58,6 +58,9 @@ service cloud.firestore {
         && data.role in ['user', 'admin']
         && (!('bio' in data) || (data.bio is string && data.bio.size() <= 400))
         && (!('avatarUrl' in data) || (data.avatarUrl is string && data.avatarUrl.size() <= 12000))
+        && (!('dailyReadingGoalMinutes' in data) || (data.dailyReadingGoalMinutes is int && data.dailyReadingGoalMinutes >= 5 && data.dailyReadingGoalMinutes <= 480))
+        && (!('dailyReminderEnabled' in data) || data.dailyReminderEnabled is bool)
+        && (!('dailyReminderTime' in data) || (data.dailyReminderTime is string && data.dailyReminderTime.size() == 5 && data.dailyReminderTime.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$')))
         && data.favorites is list && data.favorites.size() <= 100
         && (data.favorites.size() == 0 || (data.favorites[0] is string && data.favorites[0].size() <= 128))
         && data.online is bool
@@ -81,7 +84,7 @@ service cloud.firestore {
         && data.author is string && data.author.size() >= 1 && data.author.size() <= 120
         && data.category is string && data.category.size() >= 1 && data.category.size() <= 80
         && data.description is string && data.description.size() <= 2000
-        && data.coverUrl is string && data.coverUrl.size() <= 2000
+        && data.coverUrl is string && data.coverUrl.size() <= 120000
         && data.fileUrl is string && data.fileUrl.size() <= 2000
         && data.fileName is string && data.fileName.size() <= 255
         && data.fileType in ['pdf', 'epub', 'txt', 'article']
@@ -155,6 +158,28 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidBookFileChunk(data, bookId) {
+      return data.keys().hasAll([
+          'bookId', 'index', 'totalChunks', 'mimeType', 'dataBase64', 'published',
+          'createdBy', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'bookId', 'index', 'totalChunks', 'mimeType', 'dataBase64', 'published',
+          'createdBy', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.bookId)
+        && data.bookId == bookId
+        && data.index is int && data.index >= 0 && data.index < 60
+        && data.totalChunks is int && data.totalChunks >= 1 && data.totalChunks <= 60
+        && data.index < data.totalChunks
+        && data.mimeType is string && data.mimeType.size() >= 1 && data.mimeType.size() <= 120
+        && data.dataBase64 is string && data.dataBase64.size() >= 1 && data.dataBase64.size() <= 600000
+        && data.published is bool
+        && isValidId(data.createdBy)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
     function matchesAtomicRatingDelta(ratingPath, prevSum, prevCount) {
       let afterRating = getAfter(ratingPath).data.rating;
       return afterRating is int && afterRating >= 1 && afterRating <= 5 && (
@@ -197,12 +222,14 @@ service cloud.firestore {
         && incoming().updatedAt == request.time
         && (
           (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly([
-            'name', 'bio', 'avatarUrl', 'role', 'favorites', 'online', 'lastSeen', 'updatedAt'
+            'name', 'bio', 'avatarUrl', 'dailyReadingGoalMinutes', 'dailyReminderEnabled', 'dailyReminderTime', 'role', 'favorites', 'online', 'lastSeen', 'updatedAt'
           ])) ||
           (isOwner(userId) && incoming().role == existing().role && (
             incoming().diff(existing()).affectedKeys().hasOnly(['favorites', 'updatedAt']) ||
             (incoming().diff(existing()).affectedKeys().hasOnly(['online', 'lastSeen', 'updatedAt']) && incoming().lastSeen == request.time) ||
-            incoming().diff(existing()).affectedKeys().hasOnly(['name', 'bio', 'avatarUrl', 'updatedAt'])
+            incoming().diff(existing()).affectedKeys().hasOnly(['name', 'bio', 'avatarUrl', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['dailyReadingGoalMinutes', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['dailyReminderEnabled', 'dailyReminderTime', 'updatedAt'])
           ))
         );
       allow delete: if isValidId(userId) && isAdmin();
@@ -341,6 +368,33 @@ service cloud.firestore {
           && isValidId(commentId)
           && isSignedIn()
           && (isOwner(existing().userId) || isAdmin());
+      }
+
+      match /fileChunks/{chunkId} {
+        allow get: if isValidId(bookId)
+          && isValidId(chunkId)
+          && (existing().published == true || isAdmin());
+        allow list: if resource.data.published == true || isAdmin();
+        allow create: if isValidId(bookId)
+          && isValidId(chunkId)
+          && isAdmin()
+          && isValidBookFileChunk(incoming(), bookId)
+          && incoming().createdBy == request.auth.uid
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/books/$(bookId));
+        allow update: if isValidId(bookId)
+          && isValidId(chunkId)
+          && isAdmin()
+          && isValidBookFileChunk(incoming(), bookId)
+          && incoming().bookId == existing().bookId
+          && incoming().createdBy == existing().createdBy
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'index', 'totalChunks', 'mimeType', 'dataBase64', 'published', 'updatedAt'
+          ]);
+        allow delete: if isValidId(bookId) && isValidId(chunkId) && isAdmin();
       }
     }
   }
