@@ -109,6 +109,11 @@ export default defineConfig(() => {
               filter: (srcPath) => !srcPath.endsWith('.ts'),
             });
           }
+          const indexHtmlPath = path.resolve(distDir, 'index.html');
+          const spaFallbackPath = path.resolve(distDir, '200.html');
+          if (fs.existsSync(indexHtmlPath)) {
+            fs.copyFileSync(indexHtmlPath, spaFallbackPath);
+          }
         },
       },
     ],
