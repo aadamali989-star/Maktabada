@@ -62,6 +62,8 @@ export async function onRequest(context) {
         headers.set('Content-Type', sanitizeR2ContentType('', rawKey));
       }
       headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+      headers.set('Content-Disposition', 'inline');
+      headers.set('Access-Control-Allow-Origin', '*');
       headers.set('X-Content-Type-Options', 'nosniff');
       headers.set('etag', object.httpEtag);
       return new Response(object.body, { headers });
@@ -75,6 +77,8 @@ export async function onRequest(context) {
       const headers = new Headers();
       headers.set('Content-Type', r2Res.headers.get('content-type') || 'application/octet-stream');
       headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+      headers.set('Content-Disposition', 'inline');
+      headers.set('Access-Control-Allow-Origin', '*');
       headers.set('X-Content-Type-Options', 'nosniff');
       return new Response(r2Res.body, { headers });
     }

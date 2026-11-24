@@ -674,6 +674,8 @@ async function startServer() {
       const arrayBuf = await r2Res.arrayBuffer();
       res.setHeader('Content-Type', contentType);
       res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      res.setHeader('Content-Disposition', 'inline');
+      res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('X-Content-Type-Options', 'nosniff');
       res.send(Buffer.from(arrayBuf));
     } catch {
