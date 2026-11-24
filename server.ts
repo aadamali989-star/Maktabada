@@ -12,20 +12,364 @@ interface FirebaseAppletConfig {
   firestoreDatabaseId: string;
 }
 
+interface R2Credentials {
+  accountId: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  bucketName: string;
+  publicUrl: string;
+}
+
 const DEFAULT_GITHUB_REPO = 'aadamali989-star/Maktabadda';
-const DEFAULT_SUPABASE_BUCKET = 'maktabada';
 const BOOTSTRAPPED_ADMIN_EMAIL = 'aadamali989@gmail.com';
 const MAX_COVER_BYTES = 10 * 1024 * 1024;
 const MAX_BOOK_BYTES = 25 * 1024 * 1024;
-const MAX_SUPABASE_BOOK_BYTES = 50 * 1024 * 1024;
+const MAX_R2_PRESIGN_BOOK_BYTES = 100 * 1024 * 1024;
+const MAX_R2_PROXY_BOOK_BYTES = 40 * 1024 * 1024;
+const r2TextEncoder = new TextEncoder();
+
+const ALLOWED_R2_CONTENT_TYPES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/jpg',
+  'image/webp',
+  'image/avif',
+  'image/gif',
+  'application/pdf',
+  'application/epub+zip',
+  'text/plain',
+  'text/markdown',
+  'application/octet-stream',
+]);
 
 function loadFirebaseConfig(): FirebaseAppletConfig {
-  const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
-  const raw = fs.readFileSync(configPath, 'utf8');
-  return JSON.parse(raw) as FirebaseAppletConfig;
+  const baseDir = import.meta.dirname ?? process.cwd();
+  const candidates = [
+    path.join(baseDir, 'firebase-applet-config.json'),
+    path.join(process.cwd(), 'firebase-applet-config.json'),
+  ];
+  for (const configPath of candidates) {
+    try {
+      if (fs.existsSync(configPath)) {
+        const raw = fs.readFileSync(configPath, 'utf8');
+        return JSON.parse(raw) as FirebaseAppletConfig;
+      }
+    } catch {
+      // Try next location
+    }
+  }
+  return {
+    projectId: process.env.FIREBASE_PROJECT_ID || '',
+    apiKey: process.env.FIREBASE_API_KEY || '',
+    firestoreDatabaseId: process.env.FIREBASE_DATABASE_ID || '(default)',
+  };
 }
 
 const firebaseConfig = loadFirebaseConfig();
+
+function normalizeR2PublicUrl(raw: string | undefined): string {
+  const trimmed = String(raw || '').trim().replace(/\/+$/, '');
+  if (!trimmed) return '';
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      return '';
+    }
+    return parsed.toString().replace(/\/+$/, '');
+  } catch {
+    return '';
+  }
+}
+
+function readR2CredentialsFromEnv(env: Record<string, string | undefined>): R2Credentials | null {
+  const accountId = String(env.R2_ACCOUNT_ID || '').trim();
+  const accessKeyId = String(env.R2_ACCESS_KEY_ID || '').trim();
+  const secretAccessKey = String(env.R2_SECRET_ACCESS_KEY || '').trim();
+  const bucketName = String(env.R2_BUCKET_NAME || '').trim();
+  const publicUrl = normalizeR2PublicUrl(env.R2_PUBLIC_URL);
+
+  if (!accountId || !accessKeyId || !secretAccessKey || !bucketName) {
+    return null;
+  }
+  if (!/^[a-z0-9_-]{8,64}$/i.test(accountId)) {
+    return null;
+  }
+  if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/i.test(bucketName)) {
+    return null;
+  }
+  return { accountId, accessKeyId, secretAccessKey, bucketName, publicUrl };
+}
+
+function sanitizeR2FileName(name: string): string {
+  const cleaned = String(name || '')
+    .replace(/[^a-zA-Z0-9._-]/g, '_')
+    .replace(/^_+/, '');
+  return (cleaned || 'file').slice(0, 120);
+}
+
+function sanitizeR2ContentType(rawType: string | undefined, fileName: string): string {
+  const base = String(rawType || '').split(';')[0].trim().toLowerCase();
+  if (base && ALLOWED_R2_CONTENT_TYPES.has(base)) {
+    return base === 'image/jpg' ? 'image/jpeg' : base;
+  }
+  const lower = fileName.toLowerCase();
+  if (lower.endsWith('.pdf')) return 'application/pdf';
+  if (lower.endsWith('.epub')) return 'application/epub+zip';
+  if (lower.endsWith('.txt') || lower.endsWith('.md')) return 'text/plain; charset=utf-8';
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+  if (lower.endsWith('.webp')) return 'image/webp';
+  if (lower.endsWith('.avif')) return 'image/avif';
+  if (lower.endsWith('.gif')) return 'image/gif';
+  return 'application/octet-stream';
+}
+
+function buildR2ObjectKey(folder: 'covers' | 'books', fileName: string): string {
+  const randBytes = new Uint8Array(4);
+  globalThis.crypto.getRandomValues(randBytes);
+  const randHex = Array.from(randBytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  return `${folder}/${Date.now()}_${randHex}_${sanitizeR2FileName(fileName)}`;
+}
+
+function buildR2PublicAssetUrl(creds: R2Credentials, objectKey: string): string {
+  const encodedKey = objectKey
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+  if (creds.publicUrl) {
+    return `${creds.publicUrl}/${encodedKey}`;
+  }
+  return `/api/r2-storage/file/${encodedKey}`;
+}
+
+function isValidR2ObjectKey(rawKey: string): boolean {
+  if (!rawKey || rawKey.length > 300) return false;
+  if (rawKey.startsWith('/') || rawKey.includes('\\') || rawKey.includes('..') || rawKey.includes('\0')) {
+    return false;
+  }
+  return rawKey.startsWith('covers/') || rawKey.startsWith('books/');
+}
+
+function encodeRfc3986(value: string): string {
+  return encodeURIComponent(value).replace(
+    /[!'()*]/g,
+    (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`
+  );
+}
+
+function toHex(buffer: ArrayBuffer | Uint8Array): string {
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function sha256Hex(data: string | Uint8Array): Promise<string> {
+  const bytes = typeof data === 'string' ? r2TextEncoder.encode(data) : new Uint8Array(data);
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+  return toHex(digest);
+}
+
+async function hmacSha256(key: Uint8Array | ArrayBuffer, data: string): Promise<ArrayBuffer> {
+  const keyBytes = key instanceof Uint8Array ? new Uint8Array(key) : new Uint8Array(key);
+  const cryptoKey = await globalThis.crypto.subtle.importKey(
+    'raw',
+    keyBytes,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  return globalThis.crypto.subtle.sign('HMAC', cryptoKey, r2TextEncoder.encode(data));
+}
+
+async function deriveSigningKey(
+  secretAccessKey: string,
+  dateStamp: string,
+  region = 'auto',
+  service = 's3'
+): Promise<ArrayBuffer> {
+  const kDate = await hmacSha256(r2TextEncoder.encode(`AWS4${secretAccessKey}`), dateStamp);
+  const kRegion = await hmacSha256(kDate, region);
+  const kService = await hmacSha256(kRegion, service);
+  return hmacSha256(kService, 'aws4_request');
+}
+
+function formatAmzDate(date = new Date()): { amzDate: string; dateStamp: string } {
+  const iso = date.toISOString().replace(/[:-]|\.\d{3}/g, '');
+  return { amzDate: iso, dateStamp: iso.slice(0, 8) };
+}
+
+async function createR2PresignedPutUrl(params: {
+  creds: R2Credentials;
+  objectKey: string;
+  expiresSeconds?: number;
+}): Promise<{ uploadUrl: string; publicUrl: string; objectKey: string }> {
+  const { creds, objectKey, expiresSeconds = 300 } = params;
+  const host = `${creds.accountId}.r2.cloudflarestorage.com`;
+  const encodedKey = objectKey
+    .split('/')
+    .map((segment) => encodeRfc3986(segment))
+    .join('/');
+  const canonicalUri = `/${encodeRfc3986(creds.bucketName)}/${encodedKey}`;
+  const { amzDate, dateStamp } = formatAmzDate();
+  const credentialScope = `${dateStamp}/auto/s3/aws4_request`;
+  const credential = `${creds.accessKeyId}/${credentialScope}`;
+
+  const queryEntries: Array<[string, string]> = [
+    ['X-Amz-Algorithm', 'AWS4-HMAC-SHA256'],
+    ['X-Amz-Credential', credential],
+    ['X-Amz-Date', amzDate],
+    ['X-Amz-Expires', String(expiresSeconds)],
+    ['X-Amz-SignedHeaders', 'host'],
+  ];
+  queryEntries.sort((a, b) => a[0].localeCompare(b[0]));
+
+  const canonicalQueryString = queryEntries
+    .map(([k, v]) => `${encodeRfc3986(k)}=${encodeRfc3986(v)}`)
+    .join('&');
+
+  const canonicalRequest = [
+    'PUT',
+    canonicalUri,
+    canonicalQueryString,
+    `host:${host}\n`,
+    'host',
+    'UNSIGNED-PAYLOAD',
+  ].join('\n');
+
+  const stringToSign = [
+    'AWS4-HMAC-SHA256',
+    amzDate,
+    credentialScope,
+    await sha256Hex(canonicalRequest),
+  ].join('\n');
+
+  const signingKey = await deriveSigningKey(creds.secretAccessKey, dateStamp);
+  const signature = toHex(await hmacSha256(signingKey, stringToSign));
+
+  return {
+    uploadUrl: `https://${host}${canonicalUri}?${canonicalQueryString}&X-Amz-Signature=${signature}`,
+    publicUrl: buildR2PublicAssetUrl(creds, objectKey),
+    objectKey,
+  };
+}
+
+async function putObjectToR2S3(params: {
+  creds: R2Credentials;
+  objectKey: string;
+  body: Uint8Array;
+  contentType: string;
+}): Promise<{ publicUrl: string; objectKey: string }> {
+  const { creds, objectKey, body, contentType } = params;
+  const host = `${creds.accountId}.r2.cloudflarestorage.com`;
+  const encodedKey = objectKey
+    .split('/')
+    .map((segment) => encodeRfc3986(segment))
+    .join('/');
+  const canonicalUri = `/${encodeRfc3986(creds.bucketName)}/${encodedKey}`;
+
+  const { amzDate, dateStamp } = formatAmzDate();
+  const payloadHash = await sha256Hex(body);
+  const credentialScope = `${dateStamp}/auto/s3/aws4_request`;
+
+  const canonicalHeaders =
+    `content-type:${contentType}\n` +
+    `host:${host}\n` +
+    `x-amz-content-sha256:${payloadHash}\n` +
+    `x-amz-date:${amzDate}\n`;
+  const signedHeaders = 'content-type;host;x-amz-content-sha256;x-amz-date';
+
+  const canonicalRequest = [
+    'PUT',
+    canonicalUri,
+    '',
+    canonicalHeaders,
+    signedHeaders,
+    payloadHash,
+  ].join('\n');
+
+  const stringToSign = [
+    'AWS4-HMAC-SHA256',
+    amzDate,
+    credentialScope,
+    await sha256Hex(canonicalRequest),
+  ].join('\n');
+
+  const signingKey = await deriveSigningKey(creds.secretAccessKey, dateStamp);
+  const signature = toHex(await hmacSha256(signingKey, stringToSign));
+  const authorization = `AWS4-HMAC-SHA256 Credential=${creds.accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+
+  const putRes = await fetch(`https://${host}${canonicalUri}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': contentType,
+      'x-amz-content-sha256': payloadHash,
+      'x-amz-date': amzDate,
+      Authorization: authorization,
+    },
+    body: new Uint8Array(body),
+  });
+
+  if (!putRes.ok) {
+    const errText = await putRes.text();
+    throw new Error(`R2_ERROR: Cloudflare R2 upload waa la diiday (HTTP ${putRes.status}): ${errText.slice(0, 200)}`);
+  }
+
+  return {
+    publicUrl: buildR2PublicAssetUrl(creds, objectKey),
+    objectKey,
+  };
+}
+
+async function getObjectFromR2S3(params: {
+  creds: R2Credentials;
+  objectKey: string;
+}): Promise<globalThis.Response> {
+  const { creds, objectKey } = params;
+  const host = `${creds.accountId}.r2.cloudflarestorage.com`;
+  const encodedKey = objectKey
+    .split('/')
+    .map((segment) => encodeRfc3986(segment))
+    .join('/');
+  const canonicalUri = `/${encodeRfc3986(creds.bucketName)}/${encodedKey}`;
+
+  const { amzDate, dateStamp } = formatAmzDate();
+  const payloadHash = await sha256Hex('');
+  const credentialScope = `${dateStamp}/auto/s3/aws4_request`;
+
+  const canonicalHeaders =
+    `host:${host}\n` +
+    `x-amz-content-sha256:${payloadHash}\n` +
+    `x-amz-date:${amzDate}\n`;
+  const signedHeaders = 'host;x-amz-content-sha256;x-amz-date';
+
+  const canonicalRequest = [
+    'GET',
+    canonicalUri,
+    '',
+    canonicalHeaders,
+    signedHeaders,
+    payloadHash,
+  ].join('\n');
+
+  const stringToSign = [
+    'AWS4-HMAC-SHA256',
+    amzDate,
+    credentialScope,
+    await sha256Hex(canonicalRequest),
+  ].join('\n');
+
+  const signingKey = await deriveSigningKey(creds.secretAccessKey, dateStamp);
+  const signature = toHex(await hmacSha256(signingKey, stringToSign));
+  const authorization = `AWS4-HMAC-SHA256 Credential=${creds.accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+
+  return fetch(`https://${host}${canonicalUri}`, {
+    method: 'GET',
+    headers: {
+      'x-amz-content-sha256': payloadHash,
+      'x-amz-date': amzDate,
+      Authorization: authorization,
+    },
+  });
+}
 
 function sanitizeFileName(name: string): string {
   const cleaned = name.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/^_+/, '');
@@ -42,125 +386,12 @@ function normalizeSecretValue(raw: string | undefined): string {
     val = val.slice(1, -1).trim();
   }
   val = val
-    .replace(/^(?:GITHUB_TOKEN|SUPABASE_SERVICE_ROLE_KEY|SUPABASE_URL|SUPABASE_BUCKET)\s*=\s*/i, '')
+    .replace(/^GITHUB_TOKEN\s*=\s*/i, '')
     .trim();
   if (/^Bearer\s+/i.test(val)) {
     val = val.replace(/^Bearer\s+/i, '').trim();
   }
   return val;
-}
-
-function normalizeSupabaseUrl(raw: string | undefined): string {
-  const val = normalizeSecretValue(raw).replace(/\/+$/, '');
-  if (!val) return '';
-  try {
-    const parsed = new URL(val);
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return '';
-    return `${parsed.protocol}//${parsed.host}`;
-  } catch {
-    return '';
-  }
-}
-
-function normalizeBucketName(raw: string | undefined): string {
-  const cleaned = normalizeSecretValue(raw)
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]/g, '-')
-    .replace(/^-+|-+$/g, '');
-  return cleaned || DEFAULT_SUPABASE_BUCKET;
-}
-
-function encodeStoragePath(objectPath: string): string {
-  return objectPath
-    .split('/')
-    .filter(Boolean)
-    .map((segment) => encodeURIComponent(segment))
-    .join('/');
-}
-
-function resolveSupabaseSignedUrl(baseUrl: string, rawSignedUrl: string): string {
-  if (!rawSignedUrl) return '';
-  if (/^https?:\/\//i.test(rawSignedUrl)) return rawSignedUrl;
-  if (rawSignedUrl.startsWith('/storage/v1/')) return `${baseUrl}${rawSignedUrl}`;
-  if (rawSignedUrl.startsWith('/')) return `${baseUrl}/storage/v1${rawSignedUrl}`;
-  return `${baseUrl}/storage/v1/${rawSignedUrl}`;
-}
-
-async function ensurePublicSupabaseBucket(
-  baseUrl: string,
-  serviceKey: string,
-  bucket: string
-): Promise<{ ready: boolean; error: string }> {
-  const getRes = await fetch(
-    `${baseUrl}/storage/v1/bucket/${encodeURIComponent(bucket)}`,
-    {
-      headers: {
-        apikey: serviceKey,
-        Authorization: `Bearer ${serviceKey}`,
-      },
-    }
-  );
-
-  if (getRes.ok) {
-    const bucketInfo = (await getRes.json().catch(() => ({}))) as { public?: boolean };
-    if (bucketInfo && bucketInfo.public === false) {
-      await fetch(`${baseUrl}/storage/v1/bucket/${encodeURIComponent(bucket)}`, {
-        method: 'PUT',
-        headers: {
-          apikey: serviceKey,
-          Authorization: `Bearer ${serviceKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          id: bucket,
-          name: bucket,
-          public: true,
-          file_size_limit: MAX_SUPABASE_BOOK_BYTES,
-        }),
-      });
-    }
-    return { ready: true, error: '' };
-  }
-
-  if (getRes.status === 401 || getRes.status === 403) {
-    return {
-      ready: false,
-      error: `SUPABASE_SERVICE_ROLE_KEY waa khaldan yahay ama ma shaqaynayo (HTTP ${getRes.status}).`,
-    };
-  }
-
-  if (getRes.status === 404 || getRes.status === 400) {
-    const createRes = await fetch(`${baseUrl}/storage/v1/bucket`, {
-      method: 'POST',
-      headers: {
-        apikey: serviceKey,
-        Authorization: `Bearer ${serviceKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        id: bucket,
-        name: bucket,
-        public: true,
-        file_size_limit: MAX_SUPABASE_BOOK_BYTES,
-      }),
-    });
-
-    if (createRes.ok || createRes.status === 409) {
-      return { ready: true, error: '' };
-    }
-
-    const errText = await createRes.text();
-    return {
-      ready: false,
-      error: `Lama samayn karin Supabase bucket "${bucket}" (HTTP ${createRes.status}): ${errText.slice(0, 160)}`,
-    };
-  }
-
-  const errText = await getRes.text();
-  return {
-    ready: false,
-    error: `Supabase Storage lama gaari karin (HTTP ${getRes.status}): ${errText.slice(0, 160)}`,
-  };
 }
 
 function parseRepoSlug(raw: string): { owner: string; repo: string } {
@@ -307,87 +538,158 @@ async function commitFileToGitHub(params: {
 async function startServer() {
   const app = express();
   const httpServer = http.createServer(app);
-  app.use(express.json({ limit: '40mb' }));
 
-  let cachedTokenCheck: {
-    key: string;
-    canWrite: boolean;
-    tokenError: string;
-    checkedAt: number;
-  } | null = null;
-
-  let cachedSupabaseCheck: {
-    key: string;
-    ready: boolean;
-    error: string;
-    checkedAt: number;
-  } | null = null;
-
-  app.get('/api/supabase-storage/status', async (_req: Request, res: Response) => {
-    const supabaseUrl = normalizeSupabaseUrl(process.env.SUPABASE_URL);
-    const serviceKey = normalizeSecretValue(process.env.SUPABASE_SERVICE_ROLE_KEY);
-    const bucket = normalizeBucketName(process.env.SUPABASE_BUCKET);
-
-    if (!supabaseUrl || !serviceKey) {
+  app.get('/api/r2-storage/status', (_req: Request, res: Response) => {
+    const creds = readR2CredentialsFromEnv(process.env);
+    if (!creds) {
       res.json({
         configured: false,
-        ready: false,
-        bucket,
-        error: '',
+        mode: 'none',
+        bucket: '',
+        hasPublicUrl: false,
+        canPresign: false,
+        maxDirectMb: 100,
       });
       return;
     }
 
-    const cacheKey = `${supabaseUrl}:${bucket}:${serviceKey.length}`;
-    if (
-      cachedSupabaseCheck &&
-      cachedSupabaseCheck.key === cacheKey &&
-      Date.now() - cachedSupabaseCheck.checkedAt < 60000
-    ) {
-      res.json({
-        configured: true,
-        ready: cachedSupabaseCheck.ready,
-        bucket,
-        error: cachedSupabaseCheck.error,
-      });
-      return;
-    }
+    res.json({
+      configured: true,
+      mode: 's3',
+      bucket: creds.bucketName,
+      hasPublicUrl: Boolean(creds.publicUrl),
+      canPresign: true,
+      maxDirectMb: 100,
+    });
+  });
 
+  app.post(
+    '/api/r2-storage/upload',
+    express.raw({ type: '*/*', limit: '42mb' }),
+    async (req: Request, res: Response) => {
+      try {
+        const creds = readR2CredentialsFromEnv(process.env);
+        if (!creds) {
+          res.status(503).json({
+            error: 'R2_NOT_CONFIGURED',
+            message:
+              'Cloudflare R2 weli laguma darin server-ka (R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME).',
+          });
+          return;
+        }
+
+        const authHeader = req.headers.authorization || '';
+        const idToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+        await verifyFirebaseAdmin(idToken);
+
+        const rawFolder = req.headers['x-folder'];
+        const folder = rawFolder === 'covers' ? 'covers' : rawFolder === 'books' ? 'books' : null;
+        if (!folder) {
+          res.status(400).json({ error: 'INVALID_FOLDER', message: 'Folder-ku waa inuu noqdaa covers ama books.' });
+          return;
+        }
+
+        const rawFileNameHeader = req.headers['x-file-name'];
+        let fileName = 'file';
+        if (typeof rawFileNameHeader === 'string' && rawFileNameHeader.trim()) {
+          try {
+            fileName = decodeURIComponent(rawFileNameHeader.trim());
+          } catch {
+            fileName = rawFileNameHeader.trim();
+          }
+        }
+
+        const bodyBuf = Buffer.isBuffer(req.body)
+          ? req.body
+          : Buffer.from(typeof req.body === 'string' ? req.body : '');
+        if (!bodyBuf || bodyBuf.length === 0) {
+          res.status(400).json({ error: 'MISSING_FILE', message: 'Fayl madhan lama soo gelin karo.' });
+          return;
+        }
+
+        const maxAllowed = folder === 'covers' ? MAX_COVER_BYTES : MAX_R2_PROXY_BOOK_BYTES;
+        if (bodyBuf.length > maxAllowed) {
+          res.status(413).json({
+            error: 'FILE_TOO_LARGE',
+            message: `Faylku wuu ka weyn yahay xadka (${Math.round(maxAllowed / (1024 * 1024))} MB).`,
+          });
+          return;
+        }
+
+        const contentType = sanitizeR2ContentType(req.headers['content-type'], fileName);
+        const objectKey = buildR2ObjectKey(folder, fileName);
+        const result = await putObjectToR2S3({
+          creds,
+          objectKey,
+          body: new Uint8Array(bodyBuf),
+          contentType,
+        });
+
+        res.json({
+          publicUrl: result.publicUrl,
+          objectKey: result.objectKey,
+          bucket: creds.bucketName,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.startsWith('UNAUTHORIZED:')) {
+          res.status(401).json({ error: 'UNAUTHORIZED', message: msg.replace('UNAUTHORIZED: ', '') });
+          return;
+        }
+        if (msg.startsWith('FORBIDDEN:')) {
+          res.status(403).json({ error: 'FORBIDDEN', message: msg.replace('FORBIDDEN: ', '') });
+          return;
+        }
+        res.status(500).json({ error: 'R2_UPLOAD_FAILED', message: msg.replace('R2_ERROR: ', '') });
+      }
+    }
+  );
+
+  app.get('/api/r2-storage/file/*', async (req: Request, res: Response) => {
     try {
-      const check = await ensurePublicSupabaseBucket(supabaseUrl, serviceKey, bucket);
-      cachedSupabaseCheck = {
-        key: cacheKey,
-        ready: check.ready,
-        error: check.error,
-        checkedAt: Date.now(),
-      };
-      res.json({
-        configured: true,
-        ready: check.ready,
-        bucket,
-        error: check.error,
-      });
+      const creds = readR2CredentialsFromEnv(process.env);
+      if (!creds) {
+        res.status(404).send('R2 storage not configured');
+        return;
+      }
+
+      const rawKey = decodeURIComponent(req.path.replace(/^\/api\/r2-storage\/file\//, ''));
+      if (!isValidR2ObjectKey(rawKey)) {
+        res.status(400).send('Invalid file key');
+        return;
+      }
+
+      if (creds.publicUrl) {
+        res.redirect(302, buildR2PublicAssetUrl(creds, rawKey));
+        return;
+      }
+
+      const r2Res = await getObjectFromR2S3({ creds, objectKey: rawKey });
+      if (!r2Res.ok) {
+        res.status(r2Res.status === 404 ? 404 : 502).send('File not found');
+        return;
+      }
+
+      const contentType = r2Res.headers.get('content-type') || 'application/octet-stream';
+      const arrayBuf = await r2Res.arrayBuffer();
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.send(Buffer.from(arrayBuf));
     } catch {
-      res.json({
-        configured: true,
-        ready: false,
-        bucket,
-        error: 'Lama xiriiri karin Supabase Storage. Hubi SUPABASE_URL.',
-      });
+      res.status(500).send('Failed to fetch object from R2');
     }
   });
 
-  app.post('/api/supabase-storage/signed-upload', async (req: Request, res: Response) => {
-    try {
-      const supabaseUrl = normalizeSupabaseUrl(process.env.SUPABASE_URL);
-      const serviceKey = normalizeSecretValue(process.env.SUPABASE_SERVICE_ROLE_KEY);
-      const bucket = normalizeBucketName(process.env.SUPABASE_BUCKET);
+  app.use(express.json({ limit: '40mb' }));
 
-      if (!supabaseUrl || !serviceKey) {
+  app.post('/api/r2-storage/presign', async (req: Request, res: Response) => {
+    try {
+      const creds = readR2CredentialsFromEnv(process.env);
+      if (!creds) {
         res.status(503).json({
-          error: 'SUPABASE_NOT_CONFIGURED',
-          message:
-            'SUPABASE_URL iyo SUPABASE_SERVICE_ROLE_KEY weli laguma darin server-ka (Secrets / Env Vars).',
+          error: 'R2_NOT_CONFIGURED',
+          message: 'Cloudflare R2 weli laguma darin server-ka.',
         });
         return;
       }
@@ -399,29 +701,24 @@ async function startServer() {
       const body = (req.body || {}) as {
         folder?: unknown;
         fileName?: unknown;
+        contentType?: unknown;
         fileSize?: unknown;
       };
 
       const folder = body.folder === 'covers' ? 'covers' : body.folder === 'books' ? 'books' : null;
       if (!folder) {
-        res.status(400).json({
-          error: 'INVALID_FOLDER',
-          message: 'Folder-ku waa inuu noqdaa covers ama books.',
-        });
+        res.status(400).json({ error: 'INVALID_FOLDER', message: 'Folder-ku waa inuu noqdaa covers ama books.' });
         return;
       }
 
       const fileName = typeof body.fileName === 'string' ? body.fileName.trim() : '';
-      const fileSize = typeof body.fileSize === 'number' ? body.fileSize : 0;
       if (!fileName) {
-        res.status(400).json({
-          error: 'MISSING_FILE',
-          message: 'Magaca faylka waa lagama maarmaan.',
-        });
+        res.status(400).json({ error: 'MISSING_FILE_NAME', message: 'Magaca faylka waa lagama maarmaan.' });
         return;
       }
 
-      const maxAllowed = folder === 'covers' ? MAX_COVER_BYTES : MAX_SUPABASE_BOOK_BYTES;
+      const fileSize = typeof body.fileSize === 'number' ? body.fileSize : 0;
+      const maxAllowed = folder === 'covers' ? MAX_COVER_BYTES : MAX_R2_PRESIGN_BOOK_BYTES;
       if (fileSize > maxAllowed) {
         res.status(413).json({
           error: 'FILE_TOO_LARGE',
@@ -430,61 +727,19 @@ async function startServer() {
         return;
       }
 
-      const bucketCheck = await ensurePublicSupabaseBucket(supabaseUrl, serviceKey, bucket);
-      if (!bucketCheck.ready) {
-        res.status(500).json({
-          error: 'SUPABASE_BUCKET_ERROR',
-          message: bucketCheck.error || 'Supabase bucket diyaar ma aha.',
-        });
-        return;
-      }
-
-      const safeName = sanitizeFileName(fileName);
-      const objectPath = `${folder}/${Date.now()}_${safeName}`;
-      const encodedPath = encodeStoragePath(objectPath);
-
-      const signRes = await fetch(
-        `${supabaseUrl}/storage/v1/object/upload/sign/${encodeURIComponent(bucket)}/${encodedPath}`,
-        {
-          method: 'POST',
-          headers: {
-            apikey: serviceKey,
-            Authorization: `Bearer ${serviceKey}`,
-            'Content-Type': 'application/json',
-            'x-upsert': 'true',
-          },
-          body: JSON.stringify({}),
-        }
+      const contentType = sanitizeR2ContentType(
+        typeof body.contentType === 'string' ? body.contentType : undefined,
+        fileName
       );
-
-      if (!signRes.ok) {
-        const errBody = await signRes.text();
-        res.status(500).json({
-          error: 'SUPABASE_SIGN_ERROR',
-          message: `Supabase signed upload waa la diiday (HTTP ${signRes.status}): ${errBody.slice(0, 200)}`,
-        });
-        return;
-      }
-
-      const signJson = (await signRes.json()) as { url?: string };
-      const signedUrl = resolveSupabaseSignedUrl(supabaseUrl, signJson.url || '');
-      if (!signedUrl) {
-        res.status(500).json({
-          error: 'SUPABASE_SIGN_ERROR',
-          message: 'Supabase ma soo celin link-ga signed upload-ka.',
-        });
-        return;
-      }
-
-      const publicUrl = `${supabaseUrl}/storage/v1/object/public/${encodeURIComponent(
-        bucket
-      )}/${encodedPath}`;
+      const objectKey = buildR2ObjectKey(folder, fileName);
+      const presigned = await createR2PresignedPutUrl({ creds, objectKey });
 
       res.json({
-        signedUrl,
-        publicUrl,
-        path: objectPath,
-        bucket,
+        uploadUrl: presigned.uploadUrl,
+        publicUrl: presigned.publicUrl,
+        objectKey: presigned.objectKey,
+        contentType,
+        bucket: creds.bucketName,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -496,9 +751,16 @@ async function startServer() {
         res.status(403).json({ error: 'FORBIDDEN', message: msg.replace('FORBIDDEN: ', '') });
         return;
       }
-      res.status(500).json({ error: 'UPLOAD_FAILED', message: msg });
+      res.status(500).json({ error: 'PRESIGN_FAILED', message: msg });
     }
   });
+
+  let cachedTokenCheck: {
+    key: string;
+    canWrite: boolean;
+    tokenError: string;
+    checkedAt: number;
+  } | null = null;
 
   app.get('/api/github-host/status', async (_req: Request, res: Response) => {
     const token = normalizeSecretValue(process.env.GITHUB_TOKEN);
@@ -662,7 +924,9 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distDir = path.join(process.cwd(), 'dist');
+    const baseDir = import.meta.dirname ?? process.cwd();
+    const candidateDist = path.join(baseDir, 'dist');
+    const distDir = fs.existsSync(candidateDist) ? candidateDist : path.join(process.cwd(), 'dist');
     app.use(express.static(distDir));
     app.get('*', (_req: Request, res: Response) => {
       res.sendFile(path.join(distDir, 'index.html'));
@@ -674,4 +938,7 @@ async function startServer() {
   });
 }
 
-void startServer();
+startServer().catch((err) => {
+  console.error('Failed to start maktabada.so server:', err);
+  process.exit(1);
+});

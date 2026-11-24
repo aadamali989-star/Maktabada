@@ -1,10 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { Database, FileText, FolderGit2, Image as ImageIcon, Loader2, Save, X } from 'lucide-react';
 import { fetchGitHubHostStatus, type GitHubUploadStatus } from '../services/githubHostService';
-import {
-  fetchSupabaseStorageStatus,
-  type SupabaseStorageStatus,
-} from '../services/supabaseStorageService';
+import { fetchR2StorageStatus, type R2StorageStatus } from '../services/r2StorageService';
 import { extractErrorMessage, updateBookRecord } from '../services/libraryService';
 import { BLUEPRINT_LIMITS, type Book, type BookFileType } from '../types';
 import { BookCover } from './BookCover';
@@ -49,8 +46,8 @@ export function AdminBookEditModal({
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
-  const [sbStatus, setSbStatus] = useState<SupabaseStorageStatus | null>(null);
   const [ghStatus, setGhStatus] = useState<GitHubUploadStatus | null>(null);
+  const [r2Status, setR2Status] = useState<R2StorageStatus | null>(null);
 
   useEffect(() => {
     if (!coverFile) {
@@ -79,19 +76,17 @@ export function AdminBookEditModal({
     setErrorMsg('');
 
     let active = true;
-    Promise.all([fetchSupabaseStorageStatus(), fetchGitHubHostStatus()]).then(
-      ([supabase, github]) => {
-        if (!active) return;
-        setSbStatus(supabase);
-        setGhStatus(github);
-      }
-    );
+    Promise.all([fetchR2StorageStatus(), fetchGitHubHostStatus()]).then(([r2, github]) => {
+      if (!active) return;
+      setR2Status(r2);
+      setGhStatus(github);
+    });
     return () => {
       active = false;
     };
   }, [book]);
 
-  const supabaseReady = Boolean(sbStatus?.configured && sbStatus?.ready);
+  const r2Ready = Boolean(r2Status?.configured);
   const githubReady = Boolean(ghStatus?.configured && ghStatus?.canWrite);
 
   useEffect(() => {
@@ -283,11 +278,11 @@ export function AdminBookEditModal({
           <div className="p-3 rounded-lg border text-xs leading-relaxed flex items-start gap-2 bg-[#F0FDF4] dark:bg-[#14532D]/20 border-[#BBF7D0] dark:border-[#166534] text-[#14532D] dark:text-[#4ADE80]">
             <Database className="w-3.5 h-3.5 shrink-0 mt-0.5" />
             <span>
-              {supabaseReady
-                ? `Supabase Storage waa diyaar (${sbStatus?.bucket || 'maktabada'}): PDF/EPUB ilaa 50 MB & sawirrada HD toos ayay u kaydsamayaan.`
+              {r2Ready
+                ? `Cloudflare R2 Storage waa diyaar (${r2Status?.bucket || 'R2'}): ilaa ${r2Status?.maxDirectMb || 100} MB toos ayay u kaydsamayaan.`
                 : githubReady
                 ? `GitHub Direct Upload waa diyaar (${ghStatus?.repo}).`
-                : 'Kaydka Tooska ah ee Maktabadda waa diyaar: PDF/EPUB (ilaa 20 MB) iyo sawirrada jaldiga HD toos ayay u kaydsamayaan.'}
+                : 'Kaydka Tooska ah ee Maktabadda (Firebase) waa diyaar: PDF/EPUB (ilaa 20 MB) iyo sawirrada jaldiga HD toos ayay u kaydsamayaan.'}
             </span>
           </div>
 

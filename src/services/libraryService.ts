@@ -65,10 +65,10 @@ import {
   uploadFileToGitHubHost,
 } from './githubHostService';
 import {
-  fetchSupabaseStorageStatus,
-  SupabaseStorageUploadError,
-  uploadFileToSupabaseStorage,
-} from './supabaseStorageService';
+  fetchR2StorageStatus,
+  R2StorageUploadError,
+  uploadFileToR2Storage,
+} from './r2StorageService';
 
 const BOOTSTRAPPED_ADMIN_EMAIL = 'aadamali989@gmail.com';
 
@@ -81,7 +81,7 @@ function sanitizeFileName(name: string): string {
 }
 
 const MAX_COVER_FILE_BYTES = 10 * 1024 * 1024;
-const MAX_BOOK_FILE_BYTES = 50 * 1024 * 1024;
+const MAX_BOOK_FILE_BYTES = 100 * 1024 * 1024;
 const MAX_FIRESTORE_CHUNKED_BOOK_BYTES = 20 * 1024 * 1024;
 const FIRESTORE_CHUNK_RAW_BYTES = 420 * 1024;
 const MAX_FIRESTORE_CHUNK_COUNT = 60;
@@ -128,7 +128,11 @@ function validateCoverUrlInput(rawUrl: string | undefined, label: string): strin
     }
     return trimmed;
   }
-  if (trimmed.startsWith('/src/assets/') || trimmed.startsWith('/assets/')) {
+  if (
+    trimmed.startsWith('/src/assets/') ||
+    trimmed.startsWith('/assets/') ||
+    trimmed.startsWith('/api/r2-storage/file/')
+  ) {
     return trimmed.slice(0, BLUEPRINT_LIMITS.book.coverUrlMax);
   }
   const normalized = normalizeGitHubAssetUrl(trimmed);
@@ -144,7 +148,7 @@ function validateCoverUrlInput(rawUrl: string | undefined, label: string): strin
 function validateBookFileUrlInput(rawUrl: string | undefined, label: string): string {
   const trimmed = (rawUrl || '').trim();
   if (!trimmed) return '';
-  if (trimmed.startsWith(MAKTABADA_CLOUD_SCHEME)) {
+  if (trimmed.startsWith(MAKTABADA_CLOUD_SCHEME) || trimmed.startsWith('/api/r2-storage/file/')) {
     if (trimmed.length > BLUEPRINT_LIMITS.book.urlMax) {
       throw new Error(`${label} wuu ka dheer yahay xadka.`);
     }
@@ -1296,29 +1300,27 @@ async function uploadBookAssetWithCloudFirst(params: {
   const { folder, file, onStatus, allowTextFallback, hasExtractedText } = params;
   const isCover = folder === 'covers';
 
-  const [sbStatus, ghStatus] = await Promise.all([
-    fetchSupabaseStorageStatus(),
-    fetchGitHubHostStatus(),
-  ]);
+  const r2Status = await fetchR2StorageStatus();
 
-  // Optional Upgrade 1: Supabase Storage (when user configured keys)
-  if (sbStatus.configured && sbStatus.ready && auth.currentUser) {
+  // Primary Cloud Upgrade: Cloudflare R2 (10 GB free, $0 egress, 100 MB+ PDFs)
+  if (r2Status.configured && auth.currentUser) {
     onStatus?.(
       isCover
-        ? 'Soo gelinaya jaldiga Supabase (0%)...'
-        : 'Soo gelinaya faylka buugga Supabase (0%)...'
+        ? 'Soo gelinaya jaldiga Cloudflare R2 (0%)...'
+        : 'Soo gelinaya faylka buugga Cloudflare R2 (0%)...'
     );
     try {
       const idToken = await auth.currentUser.getIdToken();
-      const uploaded = await uploadFileToSupabaseStorage({
+      const uploaded = await uploadFileToR2Storage({
         folder,
         file,
         idToken,
+        canPresign: r2Status.canPresign,
         onProgress: (pct) => {
           onStatus?.(
             isCover
-              ? `Soo gelinaya jaldiga Supabase (${pct}%)...`
-              : `Soo gelinaya buugga Supabase (${pct}%)...`
+              ? `Soo gelinaya jaldiga Cloudflare R2 (${pct}%)...`
+              : `Soo gelinaya buugga Cloudflare R2 (${pct}%)...`
           );
         },
       });
@@ -1330,9 +1332,13 @@ async function uploadBookAssetWithCloudFirst(params: {
         usedTextFallback: false,
       };
     } catch (err) {
-      if (err instanceof SupabaseStorageUploadError) {
-        if (err.code === 'UNAUTHORIZED' || err.code === 'FORBIDDEN' || err.code === 'FILE_TOO_LARGE') {
-          if (allowTextFallback && hasExtractedText) {
+      if (err instanceof R2StorageUploadError) {
+        if (
+          err.code === 'UNAUTHORIZED' ||
+          err.code === 'FORBIDDEN' ||
+          err.code === 'FILE_TOO_LARGE'
+        ) {
+          if (allowTextFallback && hasExtractedText && err.code !== 'FILE_TOO_LARGE') {
             return { url: '', usedTextFallback: true };
           }
           throw err;
@@ -1341,7 +1347,9 @@ async function uploadBookAssetWithCloudFirst(params: {
     }
   }
 
-  // Optional Upgrade 2: GitHub Free Host (when write-verified)
+  const ghStatus = await fetchGitHubHostStatus();
+
+  // Optional Upgrade: GitHub Free Host (when write-verified)
   if (ghStatus.configured && ghStatus.canWrite && auth.currentUser) {
     onStatus?.(
       isCover
@@ -1432,7 +1440,7 @@ export async function createBookRecord(input: CreateBookInput): Promise<string> 
   }
 
   if (input.bookFile && input.bookFile.size > MAX_BOOK_FILE_BYTES) {
-    throw new Error('Faylka buuggu waa inuu ka yaraadaa 50 MB.');
+    throw new Error('Faylka buuggu waa inuu ka yaraadaa 100 MB.');
   }
 
   const stamp = Date.now();
@@ -1614,7 +1622,7 @@ export async function updateBookRecord(
   }
 
   if (input.bookFile && input.bookFile.size > MAX_BOOK_FILE_BYTES) {
-    throw new Error('Faylka buuggu waa inuu ka yaraadaa 50 MB.');
+    throw new Error('Faylka buuggu waa inuu ka yaraadaa 100 MB.');
   }
 
   const stamp = Date.now();

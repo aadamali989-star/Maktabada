@@ -63,6 +63,7 @@ import { AdminPanel } from './components/AdminPanel';
 import { RecentlyRead, type RecentlyReadItem } from './components/RecentlyRead';
 import { ProfileDrawer } from './components/ProfileDrawer';
 import { DailyNotificationModal } from './components/DailyNotificationModal';
+import { BrandLogo } from './components/BrandLogo';
 import { UserAvatar } from './components/UserAvatar';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { heroLibrarySanctuaryUrl } from './assets/starterAssets';
@@ -937,41 +938,55 @@ export default function App() {
   return (
     <div className="min-h-screen flex flex-col bg-[#F8F6F1] dark:bg-[#111110] text-[#1C1917] dark:text-[#F5F2EB] transition-colors">
       {/* Top Bar Contract: 1 row, 3 zones separated by gap-8 */}
-      <header className="sticky top-0 z-30 bg-[#F8F6F1]/95 dark:bg-[#111110]/95 backdrop-blur-sm border-b border-[#E5E0D5] dark:border-[#2E2C29]">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-8">
-          {/* Zone 1: Single text wordmark */}
+      <header className="sticky top-0 z-30 bg-[#F8F6F1]/92 dark:bg-[#111110]/92 backdrop-blur-md border-b border-[#E5E0D5] dark:border-[#2E2C29] shadow-[0_1px_2px_rgba(28,25,23,0.03)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.2)]">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 sm:h-[72px] flex items-center justify-between gap-4 lg:gap-8">
+          {/* Zone 1: Brand crest logo + serif wordmark */}
           <button
             type="button"
             onClick={() => handleSelectSection('library')}
-            className="font-serif text-xl font-semibold tracking-tight text-[#1C1917] dark:text-[#F5F2EB] whitespace-nowrap shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#14532D] rounded"
+            aria-label="Ku noqo bogga hore ee maktabada.so"
+            className="group inline-flex items-center whitespace-nowrap shrink-0 rounded-xl py-1 pr-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#14532D] focus-visible:ring-offset-2 focus-visible:ring-offset-[#F8F6F1] dark:focus-visible:ring-offset-[#111110]"
           >
-            maktabada.so
+            <BrandLogo />
           </button>
 
-          {/* Zone 2: Concise single-line text nav links */}
+          {/* Zone 2: Concise single-line editorial nav links */}
           <nav
             aria-label="Bogagga muhiimka ah"
-            className="hidden md:flex items-center gap-6 text-sm font-medium"
+            className="hidden md:flex items-center gap-6 lg:gap-7 text-sm font-medium"
           >
-            {navItems.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => handleSelectSection(item.id)}
-                className={`py-1 transition-colors whitespace-nowrap shrink-0 border-b-2 ${
-                  section === item.id
-                    ? 'border-[#14532D] dark:border-[#4ADE80] text-[#1C1917] dark:text-[#F5F2EB]'
-                    : 'border-transparent text-[#57534E] dark:text-[#A8A29E] hover:text-[#1C1917] dark:hover:text-[#F5F2EB]'
-                }`}
-              >
-                {item.label}
-              </button>
-            ))}
+            {navItems.map((item) => {
+              const active = section === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => handleSelectSection(item.id)}
+                  aria-current={active ? 'page' : undefined}
+                  className={`relative py-2 transition-colors whitespace-nowrap shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#14532D] rounded ${
+                    active
+                      ? 'text-[#14532D] dark:text-[#4ADE80] font-semibold'
+                      : 'text-[#57534E] dark:text-[#A8A29E] hover:text-[#1C1917] dark:hover:text-[#F5F2EB]'
+                  }`}
+                >
+                  <span>{item.label}</span>
+                  <span
+                    aria-hidden="true"
+                    className={`pointer-events-none absolute inset-x-0 -bottom-0.5 h-[2px] rounded-full transition-opacity duration-200 ${
+                      active
+                        ? 'bg-[#14532D] dark:bg-[#4ADE80] opacity-100'
+                        : 'bg-transparent opacity-0'
+                    }`}
+                  />
+                </button>
+              );
+            })}
           </nav>
 
-          {/* Zone 3: PWA Install, Daily Notification Bell, Dark Mode toggle, Profile Drawer trigger & auth action */}
+          {/* Zone 3: Precision-aligned h-10 utility controls & primary action */}
           <div className="flex items-center gap-2 shrink-0">
             <PWAInstallButton />
+
             <button
               type="button"
               onClick={() => {
@@ -980,27 +995,22 @@ export default function App() {
               }}
               aria-label="Xasuusinta Maalinlaha ah (Daily Notification)"
               title="Xasuusinta Maalinlaha ah (Daily Notification)"
-              className={`relative inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
+              className={`inline-flex items-center justify-center gap-1.5 h-10 px-3 text-xs font-medium rounded-xl border transition-colors whitespace-nowrap shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#14532D] ${
                 reminderSettings.enabled
-                  ? 'bg-[#14532D]/10 dark:bg-[#15803D]/25 border-[#14532D]/30 dark:border-[#22C55E]/40 text-[#14532D] dark:text-[#4ADE80] hover:bg-[#14532D]/15 dark:hover:bg-[#15803D]/35'
+                  ? 'bg-[#14532D]/10 dark:bg-[#15803D]/20 border-[#14532D]/30 dark:border-[#22C55E]/40 text-[#14532D] dark:text-[#4ADE80] hover:bg-[#14532D]/15 dark:hover:bg-[#15803D]/30'
                   : 'bg-white dark:bg-[#1C1B19] border-[#D6CEBE] dark:border-[#383531] text-[#57534E] dark:text-[#D6D3CD] hover:text-[#1C1917] dark:hover:text-[#F5F2EB] hover:bg-[#EFECE5] dark:hover:bg-[#292724]'
               }`}
             >
               {reminderSettings.enabled ? (
-                <BellRing className="w-3.5 h-3.5 shrink-0" />
+                <BellRing className="w-4 h-4 shrink-0" />
               ) : (
-                <Bell className="w-3.5 h-3.5 shrink-0" />
+                <Bell className="w-4 h-4 shrink-0" />
               )}
-              <span className="hidden min-[440px]:inline">
-                {reminderSettings.enabled ? `Xasuusin · ${reminderSettings.time}` : 'Xasuusin'}
+              <span className="hidden xl:inline font-mono tabular-nums">
+                {reminderSettings.enabled ? reminderSettings.time : 'Xasuusin'}
               </span>
-              {(reminderSettings.enabled || dailyReminderBanner) && (
-                <span
-                  aria-hidden="true"
-                  className="w-2 h-2 rounded-full bg-[#15803D] dark:bg-[#4ADE80]"
-                />
-              )}
             </button>
+
             <button
               type="button"
               onClick={() => handleSetReaderDarkMode()}
@@ -1010,19 +1020,21 @@ export default function App() {
                   ? 'Demi Dark Mode-ka bogga'
                   : 'Shid Dark Mode-ka bogga'
               }
-              title="Qaabka Madow (Dark Mode)"
-              className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
+              title={readerDarkMode ? 'Qaabka Iftiin (Light Mode)' : 'Qaabka Madow (Dark Mode)'}
+              className={`inline-flex items-center justify-center gap-1.5 h-10 px-3 text-xs font-medium rounded-xl border transition-colors whitespace-nowrap shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#14532D] ${
                 readerDarkMode
                   ? 'bg-[#242320] border-[#383531] text-[#F5F2EB] hover:bg-[#2E2C29]'
                   : 'bg-white border-[#D6CEBE] text-[#57534E] hover:text-[#1C1917] hover:bg-[#EFECE5]'
               }`}
             >
               {readerDarkMode ? (
-                <Sun className="w-3.5 h-3.5 text-[#FBBF24]" />
+                <Sun className="w-4 h-4 text-[#FBBF24] shrink-0" />
               ) : (
-                <Moon className="w-3.5 h-3.5" />
+                <Moon className="w-4 h-4 shrink-0" />
               )}
-              <span className="hidden min-[440px]:inline">Dark Mode</span>
+              <span className="hidden xl:inline">
+                {readerDarkMode ? 'Light' : 'Dark'}
+              </span>
             </button>
 
             {user ? (
@@ -1034,18 +1046,17 @@ export default function App() {
                     setProfileDrawerOpen(true);
                   }}
                   aria-label="Fur bogga akoonkaaga (Profile)"
-                  className="inline-flex items-center gap-2 pl-1.5 pr-3 py-1.5 text-xs font-medium border border-[#D6CEBE] dark:border-[#383531] bg-white dark:bg-[#1C1B19] text-[#1C1917] dark:text-[#F5F2EB] rounded-lg hover:bg-[#EFECE5] dark:hover:bg-[#292724] transition-colors whitespace-nowrap shrink-0"
+                  className="inline-flex items-center gap-2 h-10 pl-1.5 pr-3 text-xs font-medium border border-[#D6CEBE] dark:border-[#383531] bg-white dark:bg-[#1C1B19] text-[#1C1917] dark:text-[#F5F2EB] rounded-xl hover:bg-[#EFECE5] dark:hover:bg-[#292724] transition-colors whitespace-nowrap shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#14532D]"
                 >
                   <UserAvatar
                     src={profile?.avatarUrl || user?.photoURL}
                     name={profile?.name || user?.displayName || 'Akhriste'}
-                    sizeClass="w-6 h-6"
+                    sizeClass="w-7 h-7"
                     textClass="text-[10px]"
                   />
                   <span className="max-w-[96px] truncate hidden sm:inline">
                     {profile?.name || 'Akoonka'}
                   </span>
-                  <span className="sm:hidden">Akoonka</span>
                 </button>
 
                 <button
@@ -1053,9 +1064,9 @@ export default function App() {
                   onClick={handleLogout}
                   aria-label="Ka bax akoonka"
                   title="Ka Bax"
-                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium border border-[#D6CEBE] dark:border-[#383531] bg-white dark:bg-[#1C1B19] text-[#1C1917] dark:text-[#F5F2EB] rounded-lg hover:bg-[#EFECE5] dark:hover:bg-[#292724] transition-colors whitespace-nowrap shrink-0"
+                  className="inline-flex items-center justify-center gap-1.5 h-10 px-3 text-xs font-medium border border-[#D6CEBE] dark:border-[#383531] bg-white dark:bg-[#1C1B19] text-[#57534E] dark:text-[#D6D3CD] hover:text-[#991B1B] dark:hover:text-[#FCA5A5] rounded-xl hover:bg-[#EFECE5] dark:hover:bg-[#292724] transition-colors whitespace-nowrap shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#14532D]"
                 >
-                  <LogOut className="w-3.5 h-3.5" />
+                  <LogOut className="w-4 h-4 shrink-0" />
                   <span className="hidden lg:inline">Ka Bax</span>
                 </button>
               </>
@@ -1063,9 +1074,9 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setAuthModalOpen(true)}
-                className="inline-flex items-center gap-2 px-4 py-2 text-xs font-medium bg-[#14532D] dark:bg-[#15803D] text-white rounded-lg hover:bg-[#0F3F22] dark:hover:bg-[#166534] transition-colors whitespace-nowrap shrink-0"
+                className="inline-flex items-center justify-center gap-2 h-10 px-4 text-xs font-semibold bg-[#14532D] dark:bg-[#15803D] text-white rounded-xl hover:bg-[#0F3F22] dark:hover:bg-[#166534] shadow-xs transition-colors whitespace-nowrap shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#14532D]"
               >
-                <LogIn className="w-3.5 h-3.5" />
+                <LogIn className="w-3.5 h-3.5 shrink-0" />
                 <span>Soo Gal</span>
               </button>
             )}
@@ -1075,22 +1086,26 @@ export default function App() {
         {/* Mobile navigation row */}
         <nav
           aria-label="Menu-ga taleefanka"
-          className="md:hidden border-t border-[#EFECE5] dark:border-[#2E2C29] px-4 py-2 flex items-center gap-4 overflow-x-auto text-xs font-medium"
+          className="md:hidden border-t border-[#EFECE5] dark:border-[#2E2C29] px-4 py-1.5 flex items-center gap-5 overflow-x-auto text-xs font-medium"
         >
-          {navItems.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => handleSelectSection(item.id)}
-              className={`py-1 whitespace-nowrap shrink-0 border-b-2 ${
-                section === item.id
-                  ? 'border-[#14532D] dark:border-[#4ADE80] text-[#1C1917] dark:text-[#F5F2EB]'
-                  : 'border-transparent text-[#57534E] dark:text-[#A8A29E]'
-              }`}
-            >
-              {item.label}
-            </button>
-          ))}
+          {navItems.map((item) => {
+            const active = section === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => handleSelectSection(item.id)}
+                aria-current={active ? 'page' : undefined}
+                className={`py-1.5 whitespace-nowrap shrink-0 border-b-2 transition-colors ${
+                  active
+                    ? 'border-[#14532D] dark:border-[#4ADE80] text-[#14532D] dark:text-[#4ADE80] font-semibold'
+                    : 'border-transparent text-[#57534E] dark:text-[#A8A29E]'
+                }`}
+              >
+                {item.label}
+              </button>
+            );
+          })}
         </nav>
       </header>
 

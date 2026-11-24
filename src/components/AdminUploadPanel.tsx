@@ -1,10 +1,7 @@
 import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
 import { Upload, CheckCircle2, Image as ImageIcon, FileText, X, FolderGit2, Loader2, Database } from 'lucide-react';
 import { fetchGitHubHostStatus, type GitHubUploadStatus } from '../services/githubHostService';
-import {
-  fetchSupabaseStorageStatus,
-  type SupabaseStorageStatus,
-} from '../services/supabaseStorageService';
+import { fetchR2StorageStatus, type R2StorageStatus } from '../services/r2StorageService';
 import { createBookRecord, extractErrorMessage } from '../services/libraryService';
 import { BLUEPRINT_LIMITS, type BookFileType } from '../types';
 import { BookCover } from './BookCover';
@@ -51,23 +48,21 @@ export function AdminUploadPanel({
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
   const [ghStatus, setGhStatus] = useState<GitHubUploadStatus | null>(null);
-  const [sbStatus, setSbStatus] = useState<SupabaseStorageStatus | null>(null);
+  const [r2Status, setR2Status] = useState<R2StorageStatus | null>(null);
 
   useEffect(() => {
     let active = true;
-    Promise.all([fetchSupabaseStorageStatus(), fetchGitHubHostStatus()]).then(
-      ([supabase, github]) => {
-        if (!active) return;
-        setSbStatus(supabase);
-        setGhStatus(github);
-      }
-    );
+    Promise.all([fetchR2StorageStatus(), fetchGitHubHostStatus()]).then(([r2, github]) => {
+      if (!active) return;
+      setR2Status(r2);
+      setGhStatus(github);
+    });
     return () => {
       active = false;
     };
   }, []);
 
-  const supabaseReady = Boolean(sbStatus?.configured && sbStatus?.ready);
+  const r2Ready = Boolean(r2Status?.configured);
   const githubReady = Boolean(ghStatus?.configured && ghStatus?.canWrite);
 
   useEffect(() => {
@@ -347,11 +342,11 @@ export function AdminUploadPanel({
             <div className="p-3 rounded-lg border text-xs leading-relaxed flex items-start gap-2.5 bg-[#F0FDF4] dark:bg-[#14532D]/20 border-[#BBF7D0] dark:border-[#166534] text-[#14532D] dark:text-[#4ADE80]">
               <Database className="w-4 h-4 shrink-0 mt-0.5" />
               <span>
-                {supabaseReady
-                  ? `Supabase Storage waa diyaar (bucket: ${sbStatus?.bucket || 'maktabada'}): PDF/EPUB ilaa 50 MB iyo sawirrada jaldiga HD toos ayay ugu kaydsamayaan.`
+                {r2Ready
+                  ? `Cloudflare R2 Storage waa diyaar (${r2Status?.bucket || 'R2'}): PDF/EPUB (ilaa ${r2Status?.maxDirectMb || 100} MB) iyo sawirrada jaldiga toos ayay ugu kaydsamayaan R2.`
                   : githubReady
                   ? `GitHub Direct Upload waa diyaar (${ghStatus?.repo}): faylashaadu toos ayay ugu kaydsamayaan GitHub.`
-                  : 'Kaydka Tooska ah ee Maktabadda waa diyaar: PDF/EPUB (ilaa 20 MB) iyo sawirrada jaldiga HD-ga ah toos ayay u kaydsamayaan adigoon wax kale ku xirin.'}
+                  : 'Kaydka Tooska ah ee Maktabadda (Firebase) waa diyaar: PDF/EPUB (ilaa 20 MB) iyo sawirrada jaldiga HD-ga ah toos ayay u kaydsamayaan.'}
               </span>
             </div>
 
@@ -365,8 +360,6 @@ export function AdminUploadPanel({
                   <p className="text-xs text-[#78716C] dark:text-[#A8A29E] truncate">
                     {coverFile
                       ? coverFile.name
-                      : supabaseReady
-                      ? 'Dooro PNG / JPG (toos Supabase HD ayuu u galayaa)'
                       : 'Dooro PNG / JPG / WebP (toos ayuu HD ugu kaydsamayaa)'}
                   </p>
                   <input
@@ -399,8 +392,8 @@ export function AdminUploadPanel({
                   <div className="flex items-center gap-2.5 text-xs font-medium text-[#1C1917] dark:text-[#F5F2EB] mb-1">
                     <FileText className="w-4 h-4 text-[#14532D] dark:text-[#4ADE80]" />
                     <span>
-                      {supabaseReady
-                        ? 'Faylka Buugga (Supabase 50 MB)'
+                      {r2Ready
+                        ? 'Faylka Buugga (Cloudflare R2)'
                         : githubReady
                         ? 'Faylka Buugga (GitHub Upload)'
                         : 'Faylka Buugga (PDF / EPUB / TXT)'}
@@ -409,8 +402,8 @@ export function AdminUploadPanel({
                   <p className="text-xs text-[#78716C] dark:text-[#A8A29E] truncate">
                     {bookFile
                       ? bookFile.name
-                      : supabaseReady
-                      ? 'Dooro PDF, EPUB ama TXT (ilaa 50 MB · Supabase)'
+                      : r2Ready
+                      ? `Dooro PDF, EPUB ama TXT (ilaa ${r2Status?.maxDirectMb || 100} MB toos R2 ayuu u galayaa)`
                       : githubReady
                       ? 'Dooro PDF, EPUB ama TXT (toos GitHub ayuu u galayaa)'
                       : 'Dooro PDF, EPUB ama TXT (ilaa 20 MB toos buu u galayaa)'}
@@ -437,8 +430,8 @@ export function AdminUploadPanel({
             </div>
             {bookFile && !/\.(txt|md|csv)$/i.test(bookFile.name) && (
               <p className="text-xs text-[#57534E] dark:text-[#A8A29E] leading-relaxed">
-                {supabaseReady
-                  ? `Faylkan si toos ah ayaa loogu shubayaa Supabase Storage (${sbStatus?.bucket || 'maktabada'}) markaad gujiso Kaydi.`
+                {r2Ready
+                  ? `Faylkan si toos ah ayaa loogu shubayaa Cloudflare R2 (${r2Status?.bucket || 'R2'}) markaad gujiso Kaydi.`
                   : githubReady
                   ? `Faylkan si toos ah ayaa loogu shubayaa GitHub (${ghStatus?.repo}) markaad gujiso Kaydi.`
                   : 'Faylkan PDF/EPUB si toos ah ayaa loogu kaydinayaa Maktabadda Cloud (Firestore) markaad gujiso Kaydi.'}

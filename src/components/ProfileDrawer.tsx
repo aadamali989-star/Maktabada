@@ -36,6 +36,7 @@ import {
   writeCachedDailyReminder,
 } from '../services/dailyReminderService';
 import { BookCover } from './BookCover';
+import { StreakBadges } from './StreakBadges';
 
 interface ProfileDrawerProps {
   open: boolean;
@@ -951,6 +952,11 @@ export function ProfileDrawer({
                   : 'Akhri ugu yaraan 15 daqiiqo maalintii si aad u dhisto maalmaha isxiga.'}
               </p>
             </div>
+
+            <StreakBadges
+              readingStreak={readingStreak}
+              loading={readingStreakLoading}
+            />
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <div className="bg-white dark:bg-[#1F1E1C] border border-[#E5E0D5] dark:border-[#2E2C29] rounded-xl p-3.5">

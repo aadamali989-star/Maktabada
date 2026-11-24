@@ -1,4 +1,28 @@
-import firebaseConfig from '../../firebase-applet-config.json' with { type: 'json' };
+import fs from 'node:fs';
+import path from 'node:path';
+import { Buffer } from 'node:buffer';
+
+function loadFirebaseConfig() {
+  const candidates = [
+    new URL('../../firebase-applet-config.json', import.meta.url),
+    path.join(process.cwd(), 'firebase-applet-config.json'),
+  ];
+  for (const target of candidates) {
+    try {
+      const raw = fs.readFileSync(target, 'utf8');
+      return JSON.parse(raw);
+    } catch {
+      // Try next location
+    }
+  }
+  return {
+    projectId: process.env.FIREBASE_PROJECT_ID || '',
+    apiKey: process.env.FIREBASE_API_KEY || '',
+    firestoreDatabaseId: process.env.FIREBASE_DATABASE_ID || '(default)',
+  };
+}
+
+const firebaseConfig = loadFirebaseConfig();
 
 const DEFAULT_GITHUB_REPO = 'aadamali989-star/Maktabadda';
 const BOOTSTRAPPED_ADMIN_EMAIL = 'aadamali989@gmail.com';

@@ -26,11 +26,11 @@ export function PWAInstallButton() {
         onClick={() => void install()}
         aria-label="Ku shub App-ka mobilka ama kombiyuutarka"
         title="Ku shub App (Install App)"
-        className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium bg-[#14532D] dark:bg-[#15803D] text-white rounded-lg hover:bg-[#0F3F22] dark:hover:bg-[#166534] transition-colors whitespace-nowrap shrink-0"
+        className="inline-flex items-center gap-1.5 h-10 px-3 text-xs font-medium bg-[#14532D] dark:bg-[#15803D] text-white rounded-xl hover:bg-[#0F3F22] dark:hover:bg-[#166534] transition-colors whitespace-nowrap shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#14532D]"
       >
         <Download className="w-3.5 h-3.5 shrink-0" />
-        <span className="hidden sm:inline">Ku Shub App</span>
-        <span className="sm:hidden">App</span>
+        <span className="hidden lg:inline">Ku Shub App</span>
+        <span className="lg:hidden">App</span>
       </button>
     );
   }
@@ -43,11 +43,11 @@ export function PWAInstallButton() {
           onClick={() => setShowIOSGuide(true)}
           aria-label="Ku shub iPhone ama iPad"
           title="Ku shub iOS"
-          className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium border border-[#D6CEBE] dark:border-[#383531] bg-white dark:bg-[#1C1B19] text-[#1C1917] dark:text-[#F5F2EB] rounded-lg hover:bg-[#EFECE5] dark:hover:bg-[#292724] transition-colors whitespace-nowrap shrink-0"
+          className="inline-flex items-center gap-1.5 h-10 px-3 text-xs font-medium border border-[#D6CEBE] dark:border-[#383531] bg-white dark:bg-[#1C1B19] text-[#1C1917] dark:text-[#F5F2EB] rounded-xl hover:bg-[#EFECE5] dark:hover:bg-[#292724] transition-colors whitespace-nowrap shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#14532D]"
         >
           <Smartphone className="w-3.5 h-3.5 shrink-0" />
-          <span className="hidden sm:inline">Ku Shub iOS</span>
-          <span className="sm:hidden">App</span>
+          <span className="hidden lg:inline">Ku Shub iOS</span>
+          <span className="lg:hidden">App</span>
         </button>
 
         {showIOSGuide && (
