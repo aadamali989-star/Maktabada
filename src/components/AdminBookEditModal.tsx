@@ -279,7 +279,11 @@ export function AdminBookEditModal({
             <Database className="w-3.5 h-3.5 shrink-0 mt-0.5" />
             <span>
               {r2Ready
-                ? `Cloudflare R2 Storage waa diyaar (${r2Status?.bucket || 'R2'}): ilaa ${r2Status?.maxDirectMb || 100} MB toos ayay u kaydsamayaan.`
+                ? `Cloudflare R2 Storage waa diyaar (${r2Status?.bucket || 'R2'}): ilaa ${r2Status?.maxDirectMb || 100} MB toos ayay u kaydsamayaan.${
+                    !r2Status?.hasPublicUrl
+                      ? ' (Ku dar R2_PUBLIC_URL si buugaagta waaweyn toos looga akhriyo R2).'
+                      : ''
+                  }`
                 : githubReady
                 ? `GitHub Direct Upload waa diyaar (${ghStatus?.repo}).`
                 : 'Kaydka Tooska ah ee Maktabadda (Firebase) waa diyaar: PDF/EPUB (ilaa 20 MB) iyo sawirrada jaldiga HD toos ayay u kaydsamayaan.'}

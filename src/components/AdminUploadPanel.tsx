@@ -343,7 +343,11 @@ export function AdminUploadPanel({
               <Database className="w-4 h-4 shrink-0 mt-0.5" />
               <span>
                 {r2Ready
-                  ? `Cloudflare R2 Storage waa diyaar (${r2Status?.bucket || 'R2'}): PDF/EPUB (ilaa ${r2Status?.maxDirectMb || 100} MB) iyo sawirrada jaldiga toos ayay ugu kaydsamayaan R2.`
+                  ? `Cloudflare R2 Storage waa diyaar (${r2Status?.bucket || 'R2'}): PDF/EPUB (ilaa ${r2Status?.maxDirectMb || 100} MB) iyo sawirrada jaldiga toos ayay ugu kaydsamayaan R2.${
+                      !r2Status?.hasPublicUrl
+                        ? ' (Ku dar R2_PUBLIC_URL si buugaagta waaweyn toos looga akhriyo R2).'
+                        : ''
+                    }`
                   : githubReady
                   ? `GitHub Direct Upload waa diyaar (${ghStatus?.repo}): faylashaadu toos ayay ugu kaydsamayaan GitHub.`
                   : 'Kaydka Tooska ah ee Maktabadda (Firebase) waa diyaar: PDF/EPUB (ilaa 20 MB) iyo sawirrada jaldiga HD-ga ah toos ayay u kaydsamayaan.'}

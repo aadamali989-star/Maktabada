@@ -152,9 +152,10 @@ function uploadViaSameOriginProxy(params: {
   folder: 'covers' | 'books';
   file: File;
   idToken: string;
+  corsBlockedFallback?: boolean;
   onProgress?: (percent: number) => void;
 }): Promise<R2UploadResult> {
-  const { folder, file, idToken, onProgress } = params;
+  const { folder, file, idToken, corsBlockedFallback = false, onProgress } = params;
   return new Promise<R2UploadResult>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/r2-storage/upload');
@@ -207,7 +208,10 @@ function uploadViaSameOriginProxy(params: {
         return;
       }
       if (xhr.status === 413 || apiError === 'FILE_TOO_LARGE') {
-        reject(new R2StorageUploadError('FILE_TOO_LARGE', xhr.status, apiMsg || 'Faylku wuu ka weyn yahay xadka la oggol yahay.'));
+        const defaultTooLargeMsg = corsBlockedFallback
+          ? 'Faylku wuu ka weyn yahay xadka proxy-ga (5 MB). Ku dar CORS policy gudaha Cloudflare R2 Bucket-ka si faylasha ilaa 100 MB toos loogu shubo.'
+          : 'Faylku wuu ka weyn yahay xadka la oggol yahay.';
+        reject(new R2StorageUploadError('FILE_TOO_LARGE', xhr.status, apiMsg || defaultTooLargeMsg));
         return;
       }
       if (xhr.status === 503 || apiError === 'R2_NOT_CONFIGURED') {
@@ -265,6 +269,7 @@ export async function uploadFileToR2Storage(params: {
   }
 
   onProgress?.(4);
+  let corsBlockedFallback = false;
 
   if (canPresign) {
     const presignRes = await fetch('/api/r2-storage/presign', {
@@ -303,6 +308,7 @@ export async function uploadFileToR2Storage(params: {
           bucket: presigned.bucket || '',
         };
       }
+      corsBlockedFallback = true;
       // Fall through cleanly to same-origin proxy upload when bucket CORS is not configured
     } else {
       let errData: Record<string, unknown> | null = null;
@@ -336,6 +342,7 @@ export async function uploadFileToR2Storage(params: {
     folder,
     file,
     idToken,
+    corsBlockedFallback,
     onProgress,
   });
 }
