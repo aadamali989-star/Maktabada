@@ -322,8 +322,9 @@ async function putObjectToR2S3(params: {
 async function getObjectFromR2S3(params: {
   creds: R2Credentials;
   objectKey: string;
+  range?: string;
 }): Promise<globalThis.Response> {
-  const { creds, objectKey } = params;
+  const { creds, objectKey, range } = params;
   const host = `${creds.accountId}.r2.cloudflarestorage.com`;
   const encodedKey = objectKey
     .split('/')
@@ -361,13 +362,18 @@ async function getObjectFromR2S3(params: {
   const signature = toHex(await hmacSha256(signingKey, stringToSign));
   const authorization = `AWS4-HMAC-SHA256 Credential=${creds.accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
 
+  const headers: Record<string, string> = {
+    'x-amz-content-sha256': payloadHash,
+    'x-amz-date': amzDate,
+    Authorization: authorization,
+  };
+  if (range) {
+    headers.Range = range;
+  }
+
   return fetch(`https://${host}${canonicalUri}`, {
     method: 'GET',
-    headers: {
-      'x-amz-content-sha256': payloadHash,
-      'x-amz-date': amzDate,
-      Authorization: authorization,
-    },
+    headers,
   });
 }
 
@@ -547,6 +553,7 @@ async function startServer() {
         mode: 'none',
         bucket: '',
         hasPublicUrl: false,
+        publicUrl: '',
         canPresign: false,
         maxDirectMb: 100,
       });
@@ -558,6 +565,7 @@ async function startServer() {
       mode: 's3',
       bucket: creds.bucketName,
       hasPublicUrl: Boolean(creds.publicUrl),
+      publicUrl: creds.publicUrl,
       canPresign: true,
       maxDirectMb: 100,
     });
@@ -659,23 +667,34 @@ async function startServer() {
         return;
       }
 
-      if (creds.publicUrl) {
+      const inlineProxy = req.query.inline === '1';
+      if (creds.publicUrl && !inlineProxy) {
         res.redirect(302, buildR2PublicAssetUrl(creds, rawKey));
         return;
       }
 
-      const r2Res = await getObjectFromR2S3({ creds, objectKey: rawKey });
+      const rangeHeader = typeof req.headers.range === 'string' ? req.headers.range : undefined;
+      const r2Res = await getObjectFromR2S3({ creds, objectKey: rawKey, range: rangeHeader });
       if (!r2Res.ok) {
         res.status(r2Res.status === 404 ? 404 : 502).send('File not found');
         return;
       }
 
       const contentType = r2Res.headers.get('content-type') || 'application/octet-stream';
+      const contentRange = r2Res.headers.get('content-range');
+      const acceptRanges = r2Res.headers.get('accept-ranges') || 'bytes';
       const arrayBuf = await r2Res.arrayBuffer();
+      res.status(r2Res.status === 206 ? 206 : 200);
       res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Length', String(arrayBuf.byteLength));
+      if (contentRange) {
+        res.setHeader('Content-Range', contentRange);
+      }
+      res.setHeader('Accept-Ranges', acceptRanges);
       res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
       res.setHeader('Content-Disposition', 'inline');
       res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges');
       res.setHeader('X-Content-Type-Options', 'nosniff');
       res.send(Buffer.from(arrayBuf));
     } catch {

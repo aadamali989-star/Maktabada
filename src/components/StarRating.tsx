@@ -29,12 +29,12 @@ export function StarRating({
 
   return (
     <div
-      className={`flex flex-wrap items-center justify-between gap-2 ${
+      className={`flex flex-wrap items-center justify-between gap-1.5 ${
         variant === 'detail' ? 'py-1' : ''
       }`}
     >
       <div
-        className="flex items-center gap-0.5"
+        className="flex items-center gap-0"
         onMouseLeave={() => setHoverStar(0)}
         role="group"
         aria-label="Qiimaynta buugga"
@@ -53,14 +53,16 @@ export function StarRating({
               onClick={() => onRate?.(star)}
               aria-label={`Qiimee ${star} xiddig`}
               title={`Qiimee ${star} / 5`}
-              className={`p-1 rounded transition-transform duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#14532D] ${
+              className={`${
+                variant === 'detail' ? 'p-1' : 'p-0.5'
+              } rounded transition-transform duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#14532D] ${
                 onRate && !disabled
                   ? 'cursor-pointer hover:scale-110 active:scale-95'
                   : 'cursor-default'
               }`}
             >
               <Star
-                className={`${variant === 'detail' ? 'w-4 h-4' : 'w-3.5 h-3.5'} transition-colors ${
+                className={`${variant === 'detail' ? 'w-4 h-4' : 'w-3 h-3 sm:w-3.5 sm:h-3.5'} transition-colors ${
                   isFilled
                     ? isUserChoice || hoverStar > 0
                       ? darkSurface
@@ -80,7 +82,9 @@ export function StarRating({
       </div>
 
       <div
-        className={`flex items-center gap-1.5 text-xs whitespace-nowrap ${
+        className={`flex items-center gap-1 ${
+          variant === 'detail' ? 'text-xs' : 'text-[11px]'
+        } whitespace-nowrap ${
           darkSurface ? 'text-[#A8A29E]' : 'text-[#78716C] dark:text-[#A8A29E]'
         }`}
       >
@@ -96,7 +100,7 @@ export function StarRating({
             <span className="font-mono tabular-nums">({safeCount})</span>
           </>
         ) : (
-          <span>Weli lama qiimayn</span>
+          <span>{variant === 'detail' ? 'Weli lama qiimayn' : '0 qiimayn'}</span>
         )}
         {userRating > 0 && (
           <>

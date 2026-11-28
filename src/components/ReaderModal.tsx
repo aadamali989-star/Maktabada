@@ -28,6 +28,7 @@ import {
 import { normalizeGitHubAssetUrl } from '../services/githubHostService';
 import { StarRating } from './StarRating';
 import { BookComments } from './BookComments';
+import { PdfCanvasViewer } from './PdfCanvasViewer';
 
 interface ReaderModalProps {
   book: Book | null;
@@ -418,6 +419,23 @@ export function ReaderModal({
     schedulePersist({ percentage: nextPct, currentPage: clampedPage, totalPages: safeTotal });
   };
 
+  const handleDetectedPdfTotalPages = useCallback(
+    (detectedTotal: number) => {
+      const safeTotal = Math.max(1, Math.min(10000, Math.round(detectedTotal || 1)));
+      setTotalPages(safeTotal);
+      setCurrentPage((prevPage) => {
+        const clampedPage = Math.max(1, Math.min(safeTotal, prevPage));
+        const nextPct =
+          safeTotal <= 1
+            ? 100
+            : Math.min(100, Math.max(0, Math.round(((clampedPage - 1) / (safeTotal - 1)) * 100)));
+        setPercentage(nextPct);
+        return clampedPage;
+      });
+    },
+    []
+  );
+
   const handleResetProgress = () => {
     userInteractedRef.current = true;
     setCurrentPage(1);
@@ -797,6 +815,22 @@ export function ReaderModal({
                     )}
                   </div>
                 </div>
+              ) : normalizedFileUrl &&
+                (book.fileType === 'pdf' ||
+                  /\.pdf(\?|$)/i.test(normalizedFileUrl) ||
+                  /\.pdf$/i.test(book.fileName || '') ||
+                  normalizedFileUrl.startsWith('data:application/pdf')) ? (
+                <PdfCanvasViewer
+                  fileUrl={normalizedFileUrl}
+                  iframeSrc={iframeSrc}
+                  title={book.title}
+                  allowDownload={book.allowDownload}
+                  theme={theme}
+                  currentPage={currentPage}
+                  totalPages={totalPages}
+                  onTotalPagesChange={handleDetectedPdfTotalPages}
+                  onPageChange={handleStepFilePage}
+                />
               ) : iframeSrc ? (
                 <iframe
                   src={iframeSrc}

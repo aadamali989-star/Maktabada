@@ -305,6 +305,53 @@ async function createR2PresignedPutUrl({ creds, objectKey, expiresSeconds = 300 
   };
 }
 
+async function createR2PresignedGetUrl({ creds, objectKey, expiresSeconds = 3600 }) {
+  const host = `${creds.accountId}.r2.cloudflarestorage.com`;
+  const encodedKey = objectKey
+    .split('/')
+    .map((segment) => encodeRfc3986(segment))
+    .join('/');
+  const canonicalUri = `/${encodeRfc3986(creds.bucketName)}/${encodedKey}`;
+
+  const { amzDate, dateStamp } = formatAmzDate();
+  const credentialScope = `${dateStamp}/auto/s3/aws4_request`;
+  const credential = `${creds.accessKeyId}/${credentialScope}`;
+
+  const queryEntries = [
+    ['X-Amz-Algorithm', 'AWS4-HMAC-SHA256'],
+    ['X-Amz-Credential', credential],
+    ['X-Amz-Date', amzDate],
+    ['X-Amz-Expires', String(expiresSeconds)],
+    ['X-Amz-SignedHeaders', 'host'],
+  ];
+  queryEntries.sort((a, b) => a[0].localeCompare(b[0]));
+
+  const canonicalQueryString = queryEntries
+    .map(([k, v]) => `${encodeRfc3986(k)}=${encodeRfc3986(v)}`)
+    .join('&');
+
+  const canonicalRequest = [
+    'GET',
+    canonicalUri,
+    canonicalQueryString,
+    `host:${host}\n`,
+    'host',
+    'UNSIGNED-PAYLOAD',
+  ].join('\n');
+
+  const stringToSign = [
+    'AWS4-HMAC-SHA256',
+    amzDate,
+    credentialScope,
+    await sha256Hex(canonicalRequest),
+  ].join('\n');
+
+  const signingKey = await deriveSigningKey(creds.secretAccessKey, dateStamp);
+  const signature = toHex(await hmacSha256(signingKey, stringToSign));
+
+  return `https://${host}${canonicalUri}?${canonicalQueryString}&X-Amz-Signature=${signature}`;
+}
+
 async function putObjectToR2S3({ creds, objectKey, body, contentType }) {
   const host = `${creds.accountId}.r2.cloudflarestorage.com`;
   const encodedKey = objectKey
@@ -367,7 +414,7 @@ async function putObjectToR2S3({ creds, objectKey, body, contentType }) {
   };
 }
 
-async function getObjectFromR2S3({ creds, objectKey }) {
+async function getObjectFromR2S3({ creds, objectKey, range }) {
   const host = `${creds.accountId}.r2.cloudflarestorage.com`;
   const encodedKey = objectKey
     .split('/')
@@ -405,13 +452,18 @@ async function getObjectFromR2S3({ creds, objectKey }) {
   const signature = toHex(await hmacSha256(signingKey, stringToSign));
   const authorization = `AWS4-HMAC-SHA256 Credential=${creds.accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
 
+  const headers = {
+    'x-amz-content-sha256': payloadHash,
+    'x-amz-date': amzDate,
+    Authorization: authorization,
+  };
+  if (range) {
+    headers.Range = range;
+  }
+
   return fetch(`https://${host}${canonicalUri}`, {
     method: 'GET',
-    headers: {
-      'x-amz-content-sha256': payloadHash,
-      'x-amz-date': amzDate,
-      Authorization: authorization,
-    },
+    headers,
   });
 }
 
@@ -427,6 +479,7 @@ export default async function handler(req) {
         mode: 'none',
         bucket: '',
         hasPublicUrl: false,
+        publicUrl: '',
         canPresign: false,
         maxDirectMb: 100,
       });
@@ -437,6 +490,7 @@ export default async function handler(req) {
       mode: 's3',
       bucket: creds.bucketName,
       hasPublicUrl: Boolean(creds.publicUrl),
+      publicUrl: creds.publicUrl,
       canPresign: true,
       maxDirectMb: 100,
     });
@@ -450,20 +504,53 @@ export default async function handler(req) {
     if (!isValidR2ObjectKey(rawKey)) {
       return new Response('Invalid file key', { status: 400 });
     }
-    if (creds.publicUrl) {
+    const inlineProxy = url.searchParams.get('inline') === '1';
+    if (creds.publicUrl && !inlineProxy) {
       return Response.redirect(buildR2PublicAssetUrl(creds.publicUrl, rawKey), 302);
     }
-    const r2Res = await getObjectFromR2S3({ creds, objectKey: rawKey });
+
+    const r2Res = await getObjectFromR2S3({
+      creds,
+      objectKey: rawKey,
+      range: req.headers.get('range') || undefined,
+    });
     if (!r2Res.ok) {
       return new Response('File not found', { status: r2Res.status === 404 ? 404 : 502 });
     }
+
+    const contentLength = Number(r2Res.headers.get('content-length') || 0);
+    // Netlify Functions cap synchronous responses at 6 MB; redirect larger assets to a presigned R2 GET URL
+    if (contentLength > 4_500_000) {
+      try {
+        await r2Res.body?.cancel();
+      } catch {
+        // Ignore stream cancel error
+      }
+      const fallbackUrl = creds.publicUrl
+        ? buildR2PublicAssetUrl(creds.publicUrl, rawKey)
+        : await createR2PresignedGetUrl({ creds, objectKey: rawKey });
+      return Response.redirect(fallbackUrl, 302);
+    }
+
     const headers = new Headers();
     headers.set('Content-Type', r2Res.headers.get('content-type') || 'application/octet-stream');
+    if (contentLength > 0) {
+      headers.set('Content-Length', String(contentLength));
+    }
+    const contentRange = r2Res.headers.get('content-range');
+    if (contentRange) {
+      headers.set('Content-Range', contentRange);
+    }
+    headers.set('Accept-Ranges', r2Res.headers.get('accept-ranges') || 'bytes');
     headers.set('Cache-Control', 'public, max-age=31536000, immutable');
     headers.set('Content-Disposition', 'inline');
     headers.set('Access-Control-Allow-Origin', '*');
+    headers.set('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges');
     headers.set('X-Content-Type-Options', 'nosniff');
-    return new Response(r2Res.body, { headers });
+    return new Response(r2Res.body, {
+      status: r2Res.status === 206 ? 206 : 200,
+      headers,
+    });
   }
 
   if (req.method !== 'POST') {

@@ -540,7 +540,111 @@ export async function loginWithEmail(email: string, password: string): Promise<U
   return cred.user;
 }
 
+const PROFILE_CACHE_PREFIX = 'maktabada_cached_profile_v1_';
+
+function readCachedUserProfile(uid: string): UserProfile | null {
+  try {
+    const raw = window.localStorage.getItem(`${PROFILE_CACHE_PREFIX}${uid}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<UserProfile> | null;
+    if (!parsed || parsed.uid !== uid || typeof parsed.email !== 'string') {
+      return null;
+    }
+    return {
+      uid,
+      name: typeof parsed.name === 'string' && parsed.name ? parsed.name : 'Akhriste',
+      email: parsed.email,
+      role: parsed.role === 'admin' ? 'admin' : 'user',
+      bio: typeof parsed.bio === 'string' ? parsed.bio : '',
+      avatarUrl: typeof parsed.avatarUrl === 'string' ? parsed.avatarUrl : '',
+      favorites: Array.isArray(parsed.favorites)
+        ? parsed.favorites.filter((id): id is string => typeof id === 'string')
+        : [],
+      online: true,
+      lastSeen: parsed.lastSeen ?? Date.now(),
+      createdAt: parsed.createdAt ?? Date.now(),
+      updatedAt: parsed.updatedAt ?? Date.now(),
+      dailyReadingGoalMinutes:
+        typeof parsed.dailyReadingGoalMinutes === 'number'
+          ? parsed.dailyReadingGoalMinutes
+          : undefined,
+      dailyReminderEnabled:
+        typeof parsed.dailyReminderEnabled === 'boolean'
+          ? parsed.dailyReminderEnabled
+          : undefined,
+      dailyReminderTime:
+        typeof parsed.dailyReminderTime === 'string'
+          ? parsed.dailyReminderTime
+          : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedUserProfile(profile: UserProfile): void {
+  try {
+    const serializable: UserProfile = {
+      uid: profile.uid,
+      name: profile.name,
+      email: profile.email,
+      role: profile.role,
+      bio: profile.bio || '',
+      avatarUrl: profile.avatarUrl || '',
+      favorites: Array.isArray(profile.favorites) ? profile.favorites : [],
+      online: Boolean(profile.online),
+      lastSeen: Date.now(),
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      dailyReadingGoalMinutes: profile.dailyReadingGoalMinutes,
+      dailyReminderEnabled: profile.dailyReminderEnabled,
+      dailyReminderTime: profile.dailyReminderTime,
+    };
+    window.localStorage.setItem(
+      `${PROFILE_CACHE_PREFIX}${profile.uid}`,
+      JSON.stringify(serializable)
+    );
+  } catch {
+    // Ignore storage quota / privacy mode errors
+  }
+}
+
+function clearCachedUserProfile(uid?: string): void {
+  if (!uid) return;
+  try {
+    window.localStorage.removeItem(`${PROFILE_CACHE_PREFIX}${uid}`);
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+function buildFallbackUserProfile(user: User): UserProfile {
+  const isBootstrappedAdmin =
+    user.email?.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL && user.emailVerified;
+  const now = Date.now();
+  return {
+    uid: user.uid,
+    name:
+      sanitizeString(
+        user.displayName || user.email?.split('@')[0] || 'Akhriste',
+        BLUEPRINT_LIMITS.user.nameMax
+      ) || 'Akhriste',
+    email:
+      sanitizeString(user.email || 'user@maktabada.so', BLUEPRINT_LIMITS.user.emailMax) ||
+      'user@maktabada.so',
+    role: isBootstrappedAdmin ? 'admin' : 'user',
+    bio: '',
+    avatarUrl: sanitizeString(user.photoURL || '', BLUEPRINT_LIMITS.user.avatarUrlMax),
+    favorites: [],
+    online: true,
+    lastSeen: now,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
 export async function logoutUser(uid?: string): Promise<void> {
+  clearCachedUserProfile(uid || auth.currentUser?.uid);
   if (uid) {
     try {
       await updatePresenceOffline(uid);
@@ -976,10 +1080,27 @@ export function subscribeAuthAndProfile(
     profile: UserProfile | null;
   }) => void
 ): () => void {
+  let disposed = false;
+  let authInitialized = false;
   let profileUnsub: Unsubscribe | null = null;
   let presenceCleanup: (() => void) | null = null;
+  let activeUid: string | null = null;
+  let lastKnownProfile: UserProfile | null = null;
 
-  const authUnsub = onAuthStateChanged(auth, async (user) => {
+  void auth
+    .authStateReady()
+    .catch(() => undefined)
+    .finally(() => {
+      if (disposed) return;
+      authInitialized = true;
+      if (!auth.currentUser && !activeUid) {
+        onUpdate({ authReady: true, user: null, profile: null });
+      }
+    });
+
+  const authUnsub = onAuthStateChanged(auth, (user) => {
+    if (disposed) return;
+
     if (profileUnsub) {
       profileUnsub();
       profileUnsub = null;
@@ -990,15 +1111,33 @@ export function subscribeAuthAndProfile(
     }
 
     if (!user) {
-      onUpdate({ authReady: true, user: null, profile: null });
+      activeUid = null;
+      lastKnownProfile = null;
+      if (authInitialized) {
+        onUpdate({ authReady: true, user: null, profile: null });
+      }
       return;
     }
 
-    try {
-      await ensureUserProfile(user);
-    } catch (err) {
-      console.error('Failed to ensure user profile:', err);
-    }
+    authInitialized = true;
+    activeUid = user.uid;
+
+    // Emit cached or fallback profile immediately so reload never flickers or drops session UI
+    const initialProfile = readCachedUserProfile(user.uid) || buildFallbackUserProfile(user);
+    lastKnownProfile = initialProfile;
+    onUpdate({ authReady: true, user, profile: initialProfile });
+
+    // Ensure profile exists/updates in Firestore without blocking UI hydration
+    void ensureUserProfile(user)
+      .then((ensured) => {
+        if (disposed || activeUid !== user.uid) return;
+        lastKnownProfile = ensured;
+        writeCachedUserProfile(ensured);
+        onUpdate({ authReady: true, user, profile: ensured });
+      })
+      .catch((err) => {
+        console.error('Failed to ensure user profile:', err);
+      });
 
     presenceCleanup = setupUserPresence(user.uid);
 
@@ -1006,24 +1145,33 @@ export function subscribeAuthAndProfile(
     profileUnsub = onSnapshot(
       doc(db, 'users', user.uid),
       (snap) => {
+        if (disposed || activeUid !== user.uid) return;
         if (snap.exists()) {
+          const freshProfile = snap.data() as UserProfile;
+          lastKnownProfile = freshProfile;
+          writeCachedUserProfile(freshProfile);
           onUpdate({
             authReady: true,
             user,
-            profile: snap.data() as UserProfile,
+            profile: freshProfile,
           });
-        } else {
-          onUpdate({ authReady: true, user, profile: null });
+        } else if (lastKnownProfile) {
+          onUpdate({ authReady: true, user, profile: lastKnownProfile });
         }
       },
       (error) => {
+        if (disposed || activeUid !== user.uid) return;
         logSnapshotError(error, OperationType.GET, userPath);
-        onUpdate({ authReady: true, user, profile: null });
+        // Preserve last known/cached profile on transient network or permission hiccups
+        if (lastKnownProfile) {
+          onUpdate({ authReady: true, user, profile: lastKnownProfile });
+        }
       }
     );
   });
 
   return () => {
+    disposed = true;
     authUnsub();
     if (profileUnsub) profileUnsub();
     if (presenceCleanup) presenceCleanup();

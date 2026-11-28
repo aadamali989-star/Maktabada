@@ -293,7 +293,7 @@ export default function App() {
       setAuthReady(ready);
       setUser(u);
       setProfile(p);
-      if (!u) {
+      if (ready && !u) {
         openProfileOnAuthRef.current = false;
         setProfileDrawerOpen(false);
       }
@@ -1037,7 +1037,12 @@ export default function App() {
               </span>
             </button>
 
-            {user ? (
+            {!authReady ? (
+              <div
+                aria-hidden="true"
+                className="h-10 w-24 rounded-xl bg-[#EFECE5] dark:bg-[#1C1B19] border border-[#E5E0D5] dark:border-[#2E2C29] animate-pulse shrink-0"
+              />
+            ) : user ? (
               <>
                 <button
                   type="button"
@@ -1055,7 +1060,7 @@ export default function App() {
                     textClass="text-[10px]"
                   />
                   <span className="max-w-[96px] truncate hidden sm:inline">
-                    {profile?.name || 'Akoonka'}
+                    {profile?.name || user?.displayName || 'Akoonka'}
                   </span>
                 </button>
 
@@ -1316,7 +1321,7 @@ export default function App() {
                         </>
                       )}
                     </>
-                  ) : profile ? (
+                  ) : user || profile ? (
                     <>
                       <span>
                         Akoonka:{' '}
@@ -1325,14 +1330,14 @@ export default function App() {
                           onClick={() => setProfileDrawerOpen(true)}
                           className="font-medium text-[#1C1917] dark:text-[#F5F2EB] hover:underline"
                         >
-                          {profile.name}
+                          {profile?.name || user?.displayName || user?.email?.split('@')[0] || 'Akhriste'}
                         </button>
                       </span>
                       <span aria-hidden="true">·</span>
                       <span>
                         Doorka:{' '}
                         <strong className="font-medium text-[#14532D] dark:text-[#4ADE80]">
-                          {profile.role === 'admin' ? 'Admin (Maamule)' : 'Reader (Akhriste)'}
+                          {profile?.role === 'admin' ? 'Admin (Maamule)' : 'Reader (Akhriste)'}
                         </strong>
                       </span>
                       <span aria-hidden="true">·</span>
@@ -1559,7 +1564,7 @@ export default function App() {
                 ) : null}
               </div>
             ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-5">
                 {filteredBooks.map((book) => (
                   <BookCard
                     key={book.id}

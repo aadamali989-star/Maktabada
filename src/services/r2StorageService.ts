@@ -3,6 +3,7 @@ export interface R2StorageStatus {
   mode: 'binding' | 's3' | 'binding+s3' | 'none';
   bucket: string;
   hasPublicUrl: boolean;
+  publicUrl?: string;
   canPresign: boolean;
   maxDirectMb: number;
   reachable: boolean;
@@ -74,6 +75,7 @@ export async function fetchR2StorageStatus(forceRefresh = false): Promise<R2Stor
         mode,
         bucket: typeof data.bucket === 'string' ? data.bucket : '',
         hasPublicUrl: Boolean(data.hasPublicUrl),
+        publicUrl: typeof data.publicUrl === 'string' ? data.publicUrl : '',
         canPresign: Boolean(data.canPresign),
         maxDirectMb: typeof data.maxDirectMb === 'number' ? data.maxDirectMb : 100,
         reachable: true,
